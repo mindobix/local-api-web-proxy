@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LocalApiWebProxy</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap");
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      :root {
+        --bg:       #080c14;
+        --surface:  #0f1520;
+        --surface2: #161e2e;
+        --border:   #1e2d45;
+        --border2:  #253550;
+        --text:     #e8f0fe;
+        --muted:    #6b7fa3;
+        --dim:      #2a3a5c;
+        --violet:   #8b5cf6;
+        --violet2:  #a78bfa;
+      }
+
+      html, body {
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 14px;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        top: -200px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 900px;
+        height: 600px;
+        background: radial-gradient(ellipse at center, rgba(139, 92, 246, 0.09) 0%, transparent 70%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .page {
+        position: relative;
+        z-index: 1;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 80px 24px 80px;
+      }
+
+      /* ── BACK LINK ── */
+      .back-link {
+        align-self: flex-start;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin-bottom: 48px;
+        transition: color 0.15s;
+      }
+      .back-link:hover { color: var(--violet2); }
+
+      /* ── HERO ── */
+      .hero { text-align: center; margin-bottom: 56px; max-width: 600px; }
+
+      .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        background: rgba(139, 92, 246, 0.1);
+        border: 1px solid rgba(139, 92, 246, 0.25);
+        border-radius: 100px;
+        padding: 5px 14px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--violet2);
+        margin-bottom: 24px;
+      }
+
+      .badge-dot {
+        width: 6px;
+        height: 6px;
+        background: var(--violet);
+        border-radius: 50%;
+        box-shadow: 0 0 8px var(--violet);
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50%       { opacity: 0.5; transform: scale(0.8); }
+      }
+
+      .hero-icon {
+        font-size: 52px;
+        margin-bottom: 20px;
+        display: block;
+        filter: drop-shadow(0 0 24px rgba(139, 92, 246, 0.35));
+      }
+
+      .hero-title {
+        font-size: clamp(32px, 5vw, 52px);
+        font-weight: 900;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        margin-bottom: 16px;
+        background: linear-gradient(135deg, #e8f0fe 30%, var(--violet2));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .hero-sub {
+        font-size: 16px;
+        color: var(--muted);
+        line-height: 1.65;
+        max-width: 500px;
+        margin: 0 auto 32px;
+      }
+
+      /* ── CTA ── */
+      .cta-row {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 12px;
+        padding: 12px 24px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 0.15s, box-shadow 0.15s;
+        border: none;
+      }
+      .btn:hover { transform: translateY(-2px); }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        color: #fff;
+        box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+      }
+      .btn-primary:hover { box-shadow: 0 8px 28px rgba(139, 92, 246, 0.45); }
+
+      .btn-secondary {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border2);
+      }
+      .btn-secondary:hover { border-color: var(--violet); color: var(--violet2); }
+
+      /* ── DIVIDER ── */
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        width: 100%;
+        max-width: 760px;
+        margin: 48px 0 32px;
+      }
+      .divider-line {
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(to right, transparent, var(--border2), transparent);
+      }
+      .divider-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      /* ── FEATURE GRID ── */
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 16px;
+        width: 100%;
+        max-width: 760px;
+      }
+
+      .feature-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        transition: border-color 0.2s, transform 0.2s;
+      }
+      .feature-card:hover {
+        border-color: var(--border2);
+        transform: translateY(-2px);
+      }
+
+      .feature-icon {
+        font-size: 22px;
+        width: 44px;
+        height: 44px;
+        background: rgba(139, 92, 246, 0.1);
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .feature-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text);
+        letter-spacing: -0.01em;
+      }
+
+      .feature-desc {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      /* ── PORTS STRIP ── */
+      .ports-strip {
+        width: 100%;
+        max-width: 760px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .port-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px 22px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .port-num {
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 22px;
+        font-weight: 800;
+        color: var(--violet2);
+        letter-spacing: -0.02em;
+        flex-shrink: 0;
+      }
+
+      .port-info { display: flex; flex-direction: column; gap: 3px; }
+      .port-label { font-size: 13px; font-weight: 700; color: var(--text); }
+      .port-desc  { font-size: 11px; color: var(--muted); line-height: 1.4; }
+
+      /* ── HOW TO RUN ── */
+      .run-box {
+        width: 100%;
+        max-width: 760px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        overflow: hidden;
+      }
+
+      .run-header {
+        padding: 20px 28px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .run-header-icon {
+        font-size: 18px;
+        width: 36px;
+        height: 36px;
+        background: rgba(139, 92, 246, 0.1);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .run-header-title {
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+      }
+
+      .run-steps {
+        padding: 24px 28px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .run-step { display: flex; gap: 16px; }
+
+      .step-num {
+        width: 24px;
+        height: 24px;
+        background: rgba(139, 92, 246, 0.15);
+        border: 1px solid rgba(139, 92, 246, 0.3);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--violet2);
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .step-body { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+      .step-label { font-size: 13px; font-weight: 700; color: var(--text); }
+      .step-desc  { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+      .code-block {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .code-block-inner {
+        padding: 14px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .code-line {
+        font-family: "SF Mono", "Fira Code", "Cascadia Mono", monospace;
+        font-size: 12px;
+        color: var(--violet2);
+        line-height: 1.7;
+      }
+
+      .code-comment {
+        color: var(--dim);
+        font-family: "SF Mono", "Fira Code", "Cascadia Mono", monospace;
+        font-size: 11px;
+      }
+
+      /* ── DEVICE TABLE ── */
+      .device-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      .device-table th {
+        text-align: left;
+        color: var(--muted);
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        font-size: 10px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .device-table td {
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        vertical-align: top;
+        line-height: 1.5;
+      }
+
+      .device-table tr:last-child td { border-bottom: none; }
+
+      .device-table td:last-child { color: var(--muted); }
+
+      /* ── FILTER + SHORTCUTS GRIDS ── */
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        width: 100%;
+        max-width: 760px;
+      }
+
+      .ref-box {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+
+      .ref-header {
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .ref-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      .ref-table td {
+        padding: 8px 18px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: middle;
+      }
+
+      .ref-table tr:last-child td { border-bottom: none; }
+
+      .ref-table td:first-child {
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 11px;
+        color: var(--violet2);
+        white-space: nowrap;
+        width: 1%;
+        padding-right: 12px;
+      }
+
+      .ref-table td:last-child { color: var(--muted); }
+
+      /* ── TECH STACK ── */
+      .stack-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        gap: 10px;
+        width: 100%;
+        max-width: 760px;
+      }
+
+      .stack-pill {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 11px 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        transition: border-color 0.15s;
+      }
+      .stack-pill:hover { border-color: var(--border2); }
+
+      .stack-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot-violet  { background: #8b5cf6; box-shadow: 0 0 6px #8b5cf6; }
+      .dot-emerald { background: #10b981; box-shadow: 0 0 6px #10b981; }
+      .dot-sky     { background: #0ea5e9; box-shadow: 0 0 6px #0ea5e9; }
+      .dot-amber   { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+      .dot-slate   { background: #64748b; }
+
+      /* ── FOOTER ── */
+      .footer {
+        margin-top: 72px;
+        text-align: center;
+        font-size: 12px;
+        color: var(--dim);
+        font-weight: 500;
+        letter-spacing: 0.03em;
+      }
+      .footer span { color: var(--muted); }
+
+      /* ── RESPONSIVE ── */
+      @media (max-width: 560px) {
+        .page { padding: 48px 16px 48px; }
+        .feature-grid { grid-template-columns: 1fr 1fr; }
+        .ports-strip  { grid-template-columns: 1fr; }
+        .two-col      { grid-template-columns: 1fr; }
+        .hero-title   { font-size: 30px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+
+      <!-- BACK -->
+      <a class="back-link" href="../index.html">&#8592; LaunchPad</a>
+
+      <!-- HERO -->
+      <div class="hero">
+        <div class="hero-badge">
+          <span class="badge-dot"></span>
+          Local &rsaquo; Dev Tools
+        </div>
+        <span class="hero-icon">🔭</span>
+        <h1 class="hero-title">LocalApiWebProxy</h1>
+        <p class="hero-sub">
+          A zero-config HTTP/HTTPS proxy with a real-time dashboard. Inspect,
+          debug, and export API traffic from any device on your network —
+          like Charles Proxy, but open-source and a single <code style="font-family:monospace;color:var(--violet2)">npm start</code>.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="http://localhost:8000" target="_blank" rel="noopener">
+            &#9654; Open Dashboard
+            <span style="font-size:10px;opacity:.7;font-weight:500">localhost:8000</span>
+          </a>
+          <a class="btn btn-secondary" href="https://github.com/mindobix/local-api-web-proxy" target="_blank" rel="noopener">
+            &#8599; GitHub
+          </a>
+        </div>
+      </div>
+
+      <!-- PORTS -->
+      <div class="divider">
+        <div class="divider-line"></div>
+        <div class="divider-label">Ports</div>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="ports-strip">
+        <div class="port-card">
+          <div class="port-num">8888</div>
+          <div class="port-info">
+            <div class="port-label">Proxy</div>
+            <div class="port-desc">Point your device's HTTP/HTTPS proxy here to intercept traffic</div>
+          </div>
+        </div>
+        <div class="port-card">
+          <div class="port-num">8000</div>
+          <div class="port-info">
+            <div class="port-label">Dashboard</div>
+            <div class="port-desc">Live request viewer — open in any browser on the network</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FEATURES -->
+      <div class="divider">
+        <div class="divider-line"></div>
+        <div class="divider-label">Features</div>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <div class="feature-title">Real-Time Dashboard</div>
+          <div class="feature-desc">Requests stream in live via WebSocket as they happen — no polling, no refresh.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔐</div>
+          <div class="feature-title">HTTP + HTTPS MITM</div>
+          <div class="feature-desc">Full man-in-the-middle proxy with per-domain TLS certificate generation using node-forge.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🗂️</div>
+          <div class="feature-title">Domains + Timeline Views</div>
+          <div class="feature-desc">Browse captured traffic grouped by host, or in a flat chronological timeline.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <div class="feature-title">Smart Filter</div>
+          <div class="feature-desc">Type <code style="font-family:monospace;color:var(--violet2)">401</code>, <code style="font-family:monospace;color:var(--violet2)">post</code>, or any hostname/path/body text to narrow the view instantly.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📤</div>
+          <div class="feature-title">HAR Export</div>
+          <div class="feature-desc">Export any filtered subset as a standard <code style="font-family:monospace;color:var(--violet2)">.har</code> file — compatible with Chrome DevTools, Postman, and Charles.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📋</div>
+          <div class="feature-title">cURL Copy</div>
+          <div class="feature-desc">One click to copy any captured request as a ready-to-run <code style="font-family:monospace;color:var(--violet2)">curl</code> command.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🖼️</div>
+          <div class="feature-title">Image Preview</div>
+          <div class="feature-desc">Binary image responses render inline in the Response tab — no external viewer needed.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⏸️</div>
+          <div class="feature-title">Pause / Resume</div>
+          <div class="feature-desc">Stop recording without losing captured traffic. Press <code style="font-family:monospace;color:var(--violet2)">Space</code> to toggle.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📱</div>
+          <div class="feature-title">Multi-Device</div>
+          <div class="feature-desc">Proxy traffic from phones, tablets, simulators, or any machine on your LAN — built-in CA setup guide for all platforms.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔄</div>
+          <div class="feature-title">Auto Port Recovery</div>
+          <div class="feature-desc">If the port is in use, the old process is killed automatically and the server retakes it — no manual <code style="font-family:monospace;color:var(--violet2)">kill</code> needed.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">✨</div>
+          <div class="feature-title">JSON Pretty-Print</div>
+          <div class="feature-desc">Request and response bodies are syntax-highlighted with a one-click JSON toggle for raw vs. formatted views.</div>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔒</div>
+          <div class="feature-title">Zero Cloud</div>
+          <div class="feature-desc">No telemetry, no accounts, no relay servers. All traffic stays on your machine and LAN.</div>
+        </div>
+      </div>
+
+      <!-- HOW TO RUN -->
+      <div class="divider" id="how-to-run">
+        <div class="divider-line"></div>
+        <div class="divider-label">How to Run</div>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="run-box">
+        <div class="run-header">
+          <div class="run-header-icon">⚙️</div>
+          <div class="run-header-title">Getting Started</div>
+        </div>
+        <div class="run-steps">
+
+          <div class="run-step">
+            <div class="step-num">1</div>
+            <div class="step-body">
+              <div class="step-label">Requirements</div>
+              <div class="step-desc">Node.js 18 or later and npm. No build step — the frontend is vanilla JS.</div>
+            </div>
+          </div>
+
+          <div class="run-step">
+            <div class="step-num">2</div>
+            <div class="step-body">
+              <div class="step-label">Install dependencies</div>
+              <div class="code-block">
+                <div class="code-block-inner">
+                  <span class="code-line">npm install</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="run-step">
+            <div class="step-num">3</div>
+            <div class="step-body">
+              <div class="step-label">Start the proxy</div>
+              <div class="code-block">
+                <div class="code-block-inner">
+                  <span class="code-line">npm run dev</span>
+                  <span class="code-comment"># or: npm start — same thing</span>
+                </div>
+              </div>
+              <div class="step-desc" style="margin-top:8px">Two servers start immediately:</div>
+              <div class="code-block" style="margin-top:8px">
+                <div class="code-block-inner">
+                  <span class="code-comment"># Dashboard → open this in your browser</span>
+                  <span class="code-line">http://localhost:8000</span>
+                  <span class="code-comment" style="margin-top:6px"># Proxy → point devices here</span>
+                  <span class="code-line">http://&lt;your-ip&gt;:8888</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="run-step">
+            <div class="step-num">4</div>
+            <div class="step-body">
+              <div class="step-label">Configure your device's proxy</div>
+              <div class="step-desc" style="margin-bottom:8px">Set the WiFi/HTTP proxy on each device to <strong style="color:var(--text)">&lt;your-machine-ip&gt;:8888</strong>:</div>
+              <div class="code-block">
+                <table class="device-table">
+                  <thead>
+                    <tr>
+                      <th>Device</th>
+                      <th>Where to set it</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>🍎 macOS</td>
+                      <td>System Settings → Network → Proxies → Web Proxy + Secure Web Proxy</td>
+                    </tr>
+                    <tr>
+                      <td>🪟 Windows</td>
+                      <td>Settings → Network &amp; Internet → Proxy → Manual proxy setup</td>
+                    </tr>
+                    <tr>
+                      <td>📱 iOS</td>
+                      <td>WiFi → tap network → HTTP Proxy → Manual</td>
+                    </tr>
+                    <tr>
+                      <td>🤖 Android</td>
+                      <td>WiFi → long-press network → Modify → Advanced → Proxy → Manual</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="run-step">
+            <div class="step-num">5</div>
+            <div class="step-body">
+              <div class="step-label">Install the CA certificate (HTTPS only)</div>
+              <div class="step-desc">To inspect HTTPS traffic, open the dashboard on your device and click <strong style="color:var(--text)">CA Setup</strong>. Download and install <code style="font-family:monospace;color:var(--violet2)">LocalApiWebProxy.crt</code> — the page walks through installation for every platform. One-time per device.</div>
+            </div>
+          </div>
+
+          <div class="run-step">
+            <div class="step-num">6</div>
+            <div class="step-body">
+              <div class="step-label">Custom ports (optional)</div>
+              <div class="code-block">
+                <div class="code-block-inner">
+                  <span class="code-comment"># via env vars</span>
+                  <span class="code-line">PROXY_PORT=9999 DASH_PORT=9000 npm run start:custom</span>
+                  <span class="code-comment" style="margin-top:6px"># via flags</span>
+                  <span class="code-line">node server.js --proxy-port 9999 --dashboard-port 9000</span>
+                  <span class="code-comment"># shorthand</span>
+                  <span class="code-line">node server.js -p 9999 -d 9000</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- FILTER + SHORTCUTS -->
+      <div class="divider">
+        <div class="divider-line"></div>
+        <div class="divider-label">Quick Reference</div>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="two-col">
+        <div class="ref-box">
+          <div class="ref-header">Filter Syntax</div>
+          <table class="ref-table">
+            <tbody>
+              <tr><td>401</td><td>Status 401 only</td></tr>
+              <tr><td>5</td><td>All 5xx responses</td></tr>
+              <tr><td>post</td><td>POST requests only</td></tr>
+              <tr><td>api.example.com</td><td>Requests to that host</td></tr>
+              <tr><td>authorization</td><td>Header or body contains text</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="ref-box">
+          <div class="ref-header">Keyboard Shortcuts</div>
+          <table class="ref-table">
+            <tbody>
+              <tr><td>Space</td><td>Pause / resume recording</td></tr>
+              <tr><td>E</td><td>Export visible requests as HAR</td></tr>
+              <tr><td>↑ ↓</td><td>Navigate request list</td></tr>
+              <tr><td>Esc</td><td>Deselect request</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TECH STACK -->
+      <div class="divider">
+        <div class="divider-line"></div>
+        <div class="divider-label">Tech Stack</div>
+        <div class="divider-line"></div>
+      </div>
+
+      <div class="stack-grid">
+        <div class="stack-pill"><span class="stack-dot dot-emerald"></span>Node.js (no framework)</div>
+        <div class="stack-pill"><span class="stack-dot dot-violet"></span>node-forge (TLS/certs)</div>
+        <div class="stack-pill"><span class="stack-dot dot-sky"></span>ws (WebSocket)</div>
+        <div class="stack-pill"><span class="stack-dot dot-amber"></span>Vanilla JS + CSS</div>
+        <div class="stack-pill"><span class="stack-dot dot-slate"></span>No build step</div>
+      </div>
+
+      <!-- FOOTER -->
+      <div class="footer">
+        Built locally &mdash; <span>no internet required</span>
+      </div>
+
+    </div>
+  </body>
+</html>
