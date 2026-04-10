@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalAPIWebProxy</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ─── SVG Sprite ─────────────────────────────────────────────────────────── -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-proxy"   viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></symbol>
+  <symbol id="i-pause"   viewBox="0 0 24 24"><rect x="6"  y="4" width="4" height="16" fill="currentColor"/><rect x="14" y="4" width="4" height="16" fill="currentColor"/></symbol>
+  <symbol id="i-play"    viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-trash"   viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+  <symbol id="i-search"  viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-copy"    viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path fill="currentColor" d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+  <symbol id="i-curl"    viewBox="0 0 24 24"><path fill="currentColor" d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24"><path fill="currentColor" d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></symbol>
+  <symbol id="i-lock"    viewBox="0 0 24 24"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></symbol>
+  <symbol id="i-shield"  viewBox="0 0 24 24"><path fill="currentColor" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5z"/></symbol>
+</svg>
+
+<!-- ─── NAVBAR ──────────────────────────────────────────────────────────────── -->
+<header class="navbar">
+  <div class="brand">
+    <div class="brand-icon">
+      <svg width="15" height="15"><use href="#i-proxy"/></svg>
+    </div>
+    <span class="brand-name"><span class="brand-local">Local</span> <span class="brand-sep">›</span> APIWebProxy</span>
+  </div>
+
+  <div class="navbar-mid">
+    <button class="rec-badge" id="recBadge" title="Click to pause/resume recording">
+      <span class="rec-dot" id="recDot"></span>
+      <span class="rec-label" id="recLabel">REC</span>
+    </button>
+    <div class="ip-chips" id="ipChips"><!-- filled by JS --></div>
+    <span class="port-pill" id="portPill">:8888</span>
+  </div>
+
+  <div class="navbar-actions">
+    <button class="icon-btn" id="btnToggleRec" title="Pause / Resume recording  [Space]">
+      <svg width="13" height="13" id="recIcon"><use href="#i-pause"/></svg>
+    </button>
+    <div class="sep"></div>
+    <button class="icon-btn export-btn" id="btnExport" title="Export visible requests as HAR  [E]">
+      <svg width="13" height="13"><use href="#i-download"/></svg>
+      Export HAR
+    </button>
+    <div class="sep"></div>
+    <button class="icon-btn setup-btn" id="btnSetup" title="Install CA Certificate (required for HTTPS)">
+      <svg width="13" height="13"><use href="#i-shield"/></svg>
+      CA Setup
+    </button>
+    <div class="sep"></div>
+    <button class="icon-btn danger" id="btnClear" title="Clear all captures">
+      <svg width="13" height="13"><use href="#i-trash"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ─── TOOLBAR ────────────────────────────────────────────────────────────── -->
+<div class="toolbar">
+  <div class="view-tabs">
+    <button class="vtab active" data-view="domains">Domains</button>
+    <button class="vtab"        data-view="timeline">Timeline</button>
+  </div>
+  <div class="search-wrap">
+    <svg width="13" height="13" class="search-ico"><use href="#i-search"/></svg>
+    <input id="filterInput" class="search-input" type="text"
+           placeholder="Filter by URL, host, method, status…" autocomplete="off">
+    <button class="clear-btn hidden" id="clearFilter">✕</button>
+  </div>
+  <span class="req-count" id="reqCount">0 requests</span>
+</div>
+
+<!-- ─── MAIN ───────────────────────────────────────────────────────────────── -->
+<div class="main" id="main">
+
+  <!-- Left Panel -->
+  <div class="left-panel" id="leftPanel">
+
+    <!-- Timeline view -->
+    <div id="viewTimeline" class="hidden">
+      <div class="list-hdr">
+        <span class="lh-method">Method</span>
+        <span class="lh-status">Status</span>
+        <span class="lh-host">Host</span>
+        <span class="lh-path">Path</span>
+        <span class="lh-size">Size</span>
+        <span class="lh-dur">Time</span>
+      </div>
+      <div class="req-list" id="reqList"></div>
+    </div>
+
+    <!-- Domains view -->
+    <div id="viewDomains">
+      <div class="domain-tree" id="domainTree"></div>
+    </div>
+
+  </div>
+
+  <!-- Resize Handle -->
+  <div class="resize-handle" id="resizeHandle"></div>
+
+  <!-- Right Panel -->
+  <div class="right-panel" id="rightPanel">
+
+    <!-- Empty state -->
+    <div class="empty-state" id="emptyState">
+      <svg width="52" height="52" viewBox="0 0 24 24" fill="currentColor" style="opacity:.1">
+        <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/>
+      </svg>
+      <p class="empty-title">No request selected</p>
+      <p class="empty-sub">Click any request in the list to inspect it</p>
+      <p class="empty-hint" id="emptyHint"></p>
+    </div>
+
+    <!-- Detail panel -->
+    <div class="detail hidden" id="detail">
+      <div class="detail-tabs-bar">
+        <button class="dtab active" data-dtab="overview">Overview</button>
+        <button class="dtab"        data-dtab="request">Request</button>
+        <button class="dtab"        data-dtab="response">Response</button>
+        <div class="dtab-spacer"></div>
+        <button class="dtab-action" id="btnJsonToggle" title="Toggle JSON view">
+          { } JSON
+        </button>
+        <button class="dtab-action" id="btnCurl" title="Copy as cURL">
+          <svg width="12" height="12"><use href="#i-curl"/></svg>
+          cURL
+        </button>
+      </div>
+      <div class="detail-body">
+        <div class="dview" id="dvOverview"></div>
+        <div class="dview hidden" id="dvRequest"></div>
+        <div class="dview hidden" id="dvResponse"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── STATUS BAR ─────────────────────────────────────────────────────────── -->
+<footer class="statusbar">
+  <span class="sb-left">
+    <span class="sb-dot" id="sbDot"></span>
+    <span id="sbText">Connecting…</span>
+  </span>
+  <span class="sb-right" id="sbRight"></span>
+</footer>
+
+<!-- ─── TOAST ──────────────────────────────────────────────────────────────── -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- ─── CA SETUP MODAL ─────────────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="setupOverlay">
+  <div class="setup-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-shield"/></svg>
+        Install CA Certificate
+      </div>
+      <button class="setup-close" id="setupClose">✕</button>
+    </div>
+
+    <div class="setup-modal-body">
+      <p class="setup-desc">
+        To inspect <strong>HTTPS traffic</strong>, install the LocalApiWebProxy CA certificate on each device.
+        Do this once per device — then all HTTPS traffic appears in the dashboard.
+      </p>
+
+      <div class="setup-download" id="setupDownload">
+        <svg width="18" height="18"><use href="#i-download"/></svg>
+        <div>
+          <div class="setup-dl-label">Download CA Certificate</div>
+          <a class="setup-dl-link" id="caCertLink" href="/ca.crt" target="_blank">LocalApiWebProxy.crt</a>
+        </div>
+        <button class="setup-dl-copy" id="copyCaUrl" title="Copy URL">Copy URL</button>
+      </div>
+
+      <div class="setup-platforms">
+
+        <details class="platform-block" open>
+          <summary class="platform-title">
+            <span>macOS</span><span class="platform-badge">Desktop</span>
+          </summary>
+          <ol class="platform-steps">
+            <li>Download the CA cert above</li>
+            <li>Double-click <code>LocalApiWebProxy.crt</code> — Keychain Access opens</li>
+            <li>Find <strong>LocalApiWebProxy CA</strong> → double-click → expand <em>Trust</em></li>
+            <li>Set <strong>When using this certificate</strong> → <em>Always Trust</em></li>
+            <li>Close and enter your password</li>
+          </ol>
+        </details>
+
+        <details class="platform-block">
+          <summary class="platform-title">
+            <span>Windows</span><span class="platform-badge">Desktop</span>
+          </summary>
+          <ol class="platform-steps">
+            <li>Download the CA cert above</li>
+            <li>Double-click <code>LocalApiWebProxy.crt</code> → <em>Install Certificate</em></li>
+            <li>Choose <strong>Local Machine</strong> → Next</li>
+            <li>Select <em>Place all certificates in the following store</em></li>
+            <li>Browse → <strong>Trusted Root Certification Authorities</strong> → OK → Finish</li>
+            <li>Restart your browser</li>
+          </ol>
+        </details>
+
+        <details class="platform-block">
+          <summary class="platform-title">
+            <span>iPhone / iPad</span><span class="platform-badge">iOS</span>
+          </summary>
+          <ol class="platform-steps">
+            <li>On the device, open <strong>Safari</strong> and go to:<br>
+              <code id="iosUrl">http://&lt;your-ip&gt;:8000/ca.crt</code></li>
+            <li>Tap <em>Allow</em> when prompted to download profile</li>
+            <li><strong>Settings</strong> → <em>General</em> → <em>VPN &amp; Device Management</em></li>
+            <li>Tap <strong>LocalApiWebProxy CA</strong> → <em>Install</em> → enter passcode</li>
+            <li><strong>Settings</strong> → <em>General</em> → <em>About</em> → <em>Certificate Trust Settings</em></li>
+            <li>Toggle <strong>LocalApiWebProxy CA</strong> to <em>ON</em> → Continue</li>
+          </ol>
+        </details>
+
+        <details class="platform-block">
+          <summary class="platform-title">
+            <span>Android</span><span class="platform-badge">Android</span>
+          </summary>
+          <ol class="platform-steps">
+            <li>On the device open Chrome and go to:<br>
+              <code id="androidUrl">http://&lt;your-ip&gt;:8000/ca.crt</code></li>
+            <li>Download the file</li>
+            <li><strong>Settings</strong> → <em>Security</em> → <em>Encryption &amp; credentials</em></li>
+            <li>Tap <em>Install a certificate</em> → <em>CA certificate</em></li>
+            <li>Select the downloaded <code>LocalApiWebProxy.crt</code> → Install anyway</li>
+            <li><em>Note: Chrome browser trusts user CAs. Most apps with certificate pinning will not.</em></li>
+          </ol>
+        </details>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
