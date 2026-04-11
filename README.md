@@ -18,6 +18,7 @@ Most API debugging tools are either too heavy, too expensive, or too complex to 
 
 - **Real-time dashboard** — requests stream in live via WebSocket as they happen
 - **HTTP + HTTPS interception** — full MITM proxy with per-domain certificate generation
+- **SSL Proxying Settings** — enable/disable HTTPS decryption per host with wildcard pattern support; unmatched hosts pass through as blind tunnels
 - **Domains + Timeline views** — browse traffic grouped by host or in chronological order
 - **JSON pretty-print** — syntax-highlighted request and response bodies with a JSON toggle
 - **HAR export** — export any filtered subset of traffic as a standard `.har` file, importable in Chrome DevTools, Postman, or Charles
@@ -84,6 +85,37 @@ To inspect HTTPS traffic, install the generated CA certificate on each device.
 3. Download `LocalApiWebProxy.crt` and install it following the on-screen guide
 
 The dashboard walks through installation for macOS, Windows, iOS, and Android.
+
+---
+
+## SSL Proxying Settings
+
+**Tools → SSL Proxying Settings…** opens a dialog to control which HTTPS connections are decrypted.
+
+### Enable / Disable
+
+The **Enable SSL Proxying** toggle turns HTTPS decryption on or off globally. When disabled, all `CONNECT` tunnels are passed through as-is — the proxy carries the encrypted bytes without inspecting them.
+
+### Host Filters
+
+The **Locations** list restricts decryption to specific hosts. Add one row per host. Leave the port blank to match any port.
+
+| Pattern | Matches |
+|---|---|
+| `*` (or empty) | All HTTPS traffic |
+| `kroger.com` | `kroger.com` and all subdomains (`www.kroger.com`, `api.kroger.com`, …) |
+| `*.kroger.com` | All subdomains of `kroger.com` (and `kroger.com` itself) |
+| `kroger.com/*` | Path is ignored — treated the same as `kroger.com` |
+| `api.kroger.com` | That exact host only |
+
+Hosts not matched by any row in the list pass through as blind tunnels — their traffic is not decrypted and does not appear in the dashboard.
+
+### Keyboard Navigation
+
+Inside the Locations list:
+- `Tab` — move from Host → Port → next row's Host, adding a new row at the end
+- `Shift+Tab` — move backwards
+- `Enter` — jump to the next row's Host, or add a new row
 
 ---
 

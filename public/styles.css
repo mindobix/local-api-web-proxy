@@ -250,6 +250,13 @@ body {
   flex-shrink: 0;
 }
 
+/* Toolbar clear button — tighter than navbar icon-btn */
+.icon-btn.toolbar-clear {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
 .view-tabs { display: flex; gap: 2px; }
 
 .vtab {
@@ -1315,3 +1322,332 @@ body {
   padding: 12px 0 6px;
 }
 .section-label:first-child { padding-top: 0; }
+
+/* ─── Tools Dropdown ─────────────────────────────────────────────────────── */
+.tools-dropdown { position: relative; }
+
+/* Button — matches export-btn / setup-btn treatment but purple */
+.icon-btn.tools-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  width: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a78bfa;
+  border: 1px solid rgba(167,139,250,0.35);
+  background: rgba(167,139,250,0.10);
+  transition: all var(--transition);
+}
+.icon-btn.tools-btn:hover,
+.icon-btn.tools-btn.active {
+  background: rgba(167,139,250,0.18);
+  color: #c4b5fd;
+}
+.chevron-d {
+  opacity: 0.65;
+  transition: transform var(--transition);
+}
+.icon-btn.tools-btn.active .chevron-d { transform: rotate(180deg); }
+
+/* Menu panel */
+.tools-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 900;
+  padding: 5px;
+  animation: menu-in 120ms ease;
+}
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Separator line between SSL item and coming-soon items */
+.tools-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+
+/* Menu rows */
+.tools-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.tools-menu-item:hover:not(:disabled) { background: var(--surface-3); }
+.tools-menu-item:disabled { cursor: default; opacity: 0.55; }
+
+/* Colored icon chip (square with rounded corners) */
+.tool-icon-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+.tool-icon-chip svg { color: #fff; }
+
+.chip-blue   { background: rgba(59,130,246,0.25);  }
+.chip-amber  { background: rgba(245,158,11,0.25);  }
+.chip-cyan   { background: rgba(6,182,212,0.25);   }
+.chip-red    { background: rgba(239,68,68,0.25);   }
+.chip-purple { background: rgba(139,92,246,0.25);  }
+
+/* Colored label text */
+.tool-item-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+}
+.label-blue   { color: #93c5fd; }
+.label-amber  { color: #fcd34d; }
+.label-cyan   { color: #67e8f9; }
+.label-red    { color: #fca5a5; }
+.label-purple { color: #c4b5fd; }
+
+/* "Soon" badge */
+.soon-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  background: var(--surface-4);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+/* SSL proxying status dot */
+.ssl-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-3);
+  transition: background var(--transition);
+}
+.ssl-status-dot.on  { background: var(--success); box-shadow: 0 0 4px var(--success); }
+.ssl-status-dot.off { background: var(--text-3); }
+
+/* ─── SSL Proxying Modal ─────────────────────────────────────────────────── */
+.ssl-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 500px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in 180ms ease;
+}
+
+.ssl-modal-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+/* Toggle switch */
+.ssl-enable-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.ssl-enable-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.toggle-wrap { position: relative; display: inline-flex; }
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--surface-4);
+  border: 1px solid var(--border-2);
+  transition: background var(--transition), border-color var(--transition);
+  cursor: pointer;
+  position: relative;
+}
+.toggle-input:checked + .toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-thumb {
+  position: absolute;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform var(--transition), background var(--transition);
+}
+.toggle-input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+/* Locations list */
+.ssl-locations-section {
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.ssl-locations-hdr {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  padding: 5px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.ssl-loc-col-h {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+.ssl-loc-port-h { text-align: center; }
+
+.ssl-locations-list {
+  min-height: 100px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Two-column row: host | port — no checkbox column */
+.ssl-loc-row {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition);
+  position: relative;
+}
+.ssl-loc-row:last-child { border-bottom: none; }
+
+/* Selected row: left-border accent + very subtle bg */
+.ssl-loc-row.selected {
+  background: rgba(59,130,246,0.05);
+}
+.ssl-loc-row.selected::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Inputs look like plain text until focused */
+.ssl-loc-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  width: 100%;
+  padding: 6px 8px;
+  transition: background var(--transition);
+}
+.ssl-loc-input::placeholder { color: var(--text-3); }
+.ssl-loc-input:hover  { background: var(--surface-3); }
+.ssl-loc-input:focus  {
+  background: var(--surface-3);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* Port column: separator line on left, centred */
+.ssl-loc-port {
+  text-align: center;
+  border-left: 1px solid var(--border);
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.ssl-locations-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+.ssl-loc-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ssl-loc-btn:hover { background: var(--surface-4); color: var(--text); }
+.ssl-loc-btn-danger:hover { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
+
+.ssl-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.ssl-footer-btn {
+  padding: 6px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ssl-cancel {
+  background: transparent;
+  border: 1px solid var(--border-2);
+  color: var(--text-2);
+}
+.ssl-cancel:hover { background: var(--surface-3); color: var(--text); }
+.ssl-ok {
+  background: var(--accent);
+  border: 1px solid transparent;
+  color: #fff;
+}
+.ssl-ok:hover { background: var(--accent-hover); }

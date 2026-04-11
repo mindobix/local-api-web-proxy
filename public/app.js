@@ -14,6 +14,7 @@ const S = {
   proxyPort:   8888,
   connected:   false,
   domainOpen:  {},   // hostname → bool
+  sslProxying: { enabled: true, locations: [{ host: '*', port: '' }] },
 };
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -80,6 +81,11 @@ function handle(msg) {
       S.filtered   = [];
       S.selectedId = null;
       renderAll();
+      break;
+
+    case 'ssl_proxying':
+      S.sslProxying = msg.data;
+      updateSslStatusDot();
       break;
   }
 }
@@ -869,6 +875,210 @@ function initFilter() {
   });
 }
 
+// ─── Tools Dropdown ───────────────────────────────────────────────────────────
+function initToolsDropdown() {
+  const btn  = $('btnTools');
+  const menu = $('toolsMenu');
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !menu.classList.contains('hidden');
+    if (open) {
+      menu.classList.add('hidden');
+      btn.classList.remove('active');
+    } else {
+      menu.classList.remove('hidden');
+      btn.classList.add('active');
+    }
+  });
+
+  // Close on outside click
+  document.addEventListener('click', () => {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+  });
+
+  $('menuSslProxying').addEventListener('click', () => {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+    openSslModal();
+  });
+
+  // Fetch current settings from server
+  fetch('/api/ssl-proxying')
+    .then(r => r.json())
+    .then(data => { S.sslProxying = data; updateSslStatusDot(); })
+    .catch(() => {});
+}
+
+function updateSslStatusDot() {
+  const dot = $('sslStatusDot');
+  if (!dot) return;
+  dot.classList.remove('on', 'off');
+  dot.classList.add(S.sslProxying.enabled ? 'on' : 'off');
+}
+
+// ─── SSL Proxying Modal ───────────────────────────────────────────────────────
+let _sslDraft = null; // working copy while modal is open
+let _sslSelectedRow = -1;
+
+function openSslModal() {
+  _sslDraft = {
+    enabled:   S.sslProxying.enabled,
+    locations: S.sslProxying.locations.map(l => ({ ...l })),
+  };
+  _sslSelectedRow = -1;
+  $('sslEnabled').checked = _sslDraft.enabled;
+  renderSslLocations();
+  $('sslOverlay').classList.remove('hidden');
+}
+
+function closeSslModal() {
+  $('sslOverlay').classList.add('hidden');
+  _sslDraft = null;
+  _sslSelectedRow = -1;
+}
+
+// Toggle selected row class without touching input DOM — preserves focus & caret
+function selectSslRow(idx) {
+  _sslSelectedRow = idx;
+  $('sslLocationsList').querySelectorAll('.ssl-loc-row').forEach((r, i) => {
+    r.classList.toggle('selected', i === idx);
+  });
+}
+
+// Build one row and append it. idx is its position in _sslDraft.locations.
+function appendSslRow(idx, loc) {
+  const list = $('sslLocationsList');
+
+  const row = document.createElement('div');
+  row.className = 'ssl-loc-row' + (idx === _sslSelectedRow ? ' selected' : '');
+
+  const mkInput = (field, value, placeholder, extraClass) => {
+    const inp = document.createElement('input');
+    inp.type        = 'text';
+    inp.className   = 'ssl-loc-input' + (extraClass ? ' ' + extraClass : '');
+    inp.value       = value;
+    inp.placeholder = placeholder;
+    inp.spellcheck  = false;
+    inp.autocomplete = 'off';
+
+    inp.addEventListener('focus', () => selectSslRow(idx));
+
+    inp.addEventListener('input', () => {
+      _sslDraft.locations[idx][field] = inp.value;
+    });
+
+    inp.addEventListener('keydown', e => {
+      const rows = $('sslLocationsList').querySelectorAll('.ssl-loc-row');
+      const inputs = row.querySelectorAll('.ssl-loc-input');
+      const isHost = field === 'host';
+      const isPort = field === 'port';
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        if (!e.shiftKey) {
+          // Forward: host → port → next row's host → … → add new row
+          if (isHost) { inputs[1].focus(); }
+          else if (idx < _sslDraft.locations.length - 1) {
+            rows[idx + 1].querySelectorAll('.ssl-loc-input')[0].focus();
+          } else {
+            addSslRow();
+          }
+        } else {
+          // Backward: port → host → prev row's port
+          if (isPort) { inputs[0].focus(); }
+          else if (idx > 0) {
+            rows[idx - 1].querySelectorAll('.ssl-loc-input')[1].focus();
+          }
+        }
+      }
+
+      if (e.key === 'Enter') {
+        if (idx < _sslDraft.locations.length - 1) {
+          rows[idx + 1].querySelectorAll('.ssl-loc-input')[0].focus();
+        } else {
+          addSslRow();
+        }
+      }
+    });
+
+    return inp;
+  };
+
+  row.appendChild(mkInput('host', loc.host, '*'));
+  row.appendChild(mkInput('port', loc.port, '443', 'ssl-loc-port'));
+
+  // Clicking the row background (not an input) still marks it selected
+  row.addEventListener('mousedown', e => {
+    if (e.target === row) selectSslRow(idx);
+  });
+
+  list.appendChild(row);
+  return row;
+}
+
+// Full re-render — call only on open or after structural change (Remove)
+function renderSslLocations() {
+  $('sslLocationsList').innerHTML = '';
+  _sslDraft.locations.forEach((loc, i) => appendSslRow(i, loc));
+}
+
+// Append one new location row and focus its host input
+function addSslRow() {
+  if (!_sslDraft) return;
+  const idx = _sslDraft.locations.length;
+  _sslDraft.locations.push({ host: '', port: '' });
+  selectSslRow(idx);
+  const row = appendSslRow(idx, _sslDraft.locations[idx]);
+  row.querySelectorAll('.ssl-loc-input')[0].focus();
+}
+
+// Remove selected row, re-render (indices shift), restore focus
+function removeSslRow() {
+  if (!_sslDraft || _sslSelectedRow < 0 || !_sslDraft.locations.length) return;
+  _sslDraft.locations.splice(_sslSelectedRow, 1);
+  _sslSelectedRow = Math.min(_sslSelectedRow, _sslDraft.locations.length - 1);
+  renderSslLocations();
+  const rows = $('sslLocationsList').querySelectorAll('.ssl-loc-row');
+  if (rows[_sslSelectedRow]) {
+    rows[_sslSelectedRow].querySelectorAll('.ssl-loc-input')[0].focus();
+  }
+}
+
+function initSslModal() {
+  $('sslEnabled').addEventListener('change', e => {
+    if (_sslDraft) _sslDraft.enabled = e.target.checked;
+  });
+
+  $('sslAddLocation').addEventListener('click', addSslRow);
+  $('sslRemoveLocation').addEventListener('click', removeSslRow);
+
+  $('sslOk').addEventListener('click', async () => {
+    if (!_sslDraft) return;
+    try {
+      const res = await fetch('/api/ssl-proxying', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(_sslDraft),
+      });
+      const data = await res.json();
+      S.sslProxying = data;
+      updateSslStatusDot();
+      toast(`SSL proxying ${data.enabled ? 'enabled' : 'disabled'}`, 'success');
+    } catch {
+      toast('Failed to save SSL settings', 'error');
+    }
+    closeSslModal();
+  });
+
+  $('sslCancel').addEventListener('click', closeSslModal);
+  $('sslClose').addEventListener('click',  closeSslModal);
+  $('sslOverlay').addEventListener('click', e => {
+    if (e.target === $('sslOverlay')) closeSslModal();
+  });
+}
+
 // ─── Navbar Action Buttons ────────────────────────────────────────────────────
 function initNavActions() {
   $('recBadge').addEventListener('click',     () => send({ type: 'toggle_recording' }));
@@ -964,6 +1174,8 @@ function init() {
   initDetailTabs();
   initFilter();
   initNavActions();
+  initToolsDropdown();
+  initSslModal();
   initSetupModal();
   initResize();
   initKeyboard();

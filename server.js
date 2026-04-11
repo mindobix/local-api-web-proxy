@@ -10,6 +10,7 @@ const os      = require('os');
 const crypto  = require('crypto');
 const { EventEmitter } = require('events');
 const { execSync }    = require('child_process');
+const net     = require('net');
 const WebSocket = require('ws');
 const forge   = require('node-forge');
 const pki     = forge.pki;
@@ -61,12 +62,42 @@ const LEAF_KEY_PATH  = path.join(CERTS_DIR, 'leaf.key');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let recording = true;
+let sslProxying = { enabled: true, locations: [{ host: '*', port: '' }] };
 const captures       = []; // newest first
 const captureBuffers = new Map(); // id → { buf, contentType } for binary responses
 const emitter        = new EventEmitter();
 const certCache      = {}; // hostname → { key, cert }
 let CA               = null;
 let sharedLeafKeys   = null;
+
+// ─── SSL Proxying Filter ──────────────────────────────────────────────────────
+function sslProxyingAllows(hostname, port) {
+  if (!sslProxying.enabled) return false;
+  if (!sslProxying.locations.length) return false;
+
+  const h = hostname.toLowerCase();
+
+  return sslProxying.locations.some(loc => {
+    // Strip any path portion — users enter "kroger.com/*" meaning the host only
+    const host = (loc.host || '').trim().split('/')[0].toLowerCase();
+
+    let hMatch;
+    if (!host || host === '*') {
+      // Empty or bare wildcard → match everything
+      hMatch = true;
+    } else if (host.startsWith('*.')) {
+      // *.kroger.com → matches any subdomain AND the bare domain itself
+      const base = host.slice(2);
+      hMatch = h === base || h.endsWith('.' + base);
+    } else {
+      // kroger.com → match the domain AND all its subdomains
+      hMatch = h === host || h.endsWith('.' + host);
+    }
+
+    const pMatch = !loc.port || loc.port === '*' || loc.port === String(port);
+    return hMatch && pMatch;
+  });
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getLocalIPs() {
@@ -322,6 +353,19 @@ function handleConnect(req, clientSocket, head) {
   const [hostname, portStr] = req.url.split(':');
   const port = parseInt(portStr) || 443;
 
+  // If SSL proxying is disabled or this host isn't in the filter list, pass through
+  if (!sslProxyingAllows(hostname, port)) {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    const tunnel = net.connect(port, hostname, () => {
+      if (head && head.length) tunnel.write(head);
+      clientSocket.pipe(tunnel);
+      tunnel.pipe(clientSocket);
+    });
+    tunnel.on('error', () => clientSocket.destroy());
+    clientSocket.on('error', () => tunnel.destroy());
+    return;
+  }
+
   // 1. Acknowledge tunnel to client
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
 
@@ -448,6 +492,30 @@ function createDashboard() {
         recording, proxyPort: PROXY_PORT,
         ips: getLocalIPs(), count: captures.length,
       }));
+      return;
+    }
+
+    if (req.url === '/api/ssl-proxying' && req.method === 'GET') {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(sslProxying));
+      return;
+    }
+
+    if (req.url === '/api/ssl-proxying' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const update = JSON.parse(body);
+          if (typeof update.enabled === 'boolean') sslProxying.enabled = update.enabled;
+          if (Array.isArray(update.locations))       sslProxying.locations = update.locations;
+          broadcast({ type: 'ssl_proxying', data: sslProxying });
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(sslProxying));
+        } catch {
+          res.writeHead(400); res.end('Bad Request');
+        }
+      });
       return;
     }
 
