@@ -1651,3 +1651,396 @@ body {
   color: #fff;
 }
 .ssl-ok:hover { background: var(--accent-hover); }
+
+/* ─── Map Local ──────────────────────────────────────────────────────────── */
+
+/* Status dot in tools menu (same as SSL but amber) */
+.ml-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-3);
+  transition: background var(--transition);
+}
+.ml-status-dot.on  { background: #f59e0b; box-shadow: 0 0 4px #f59e0b; }
+.ml-status-dot.off { background: var(--text-3); }
+
+/* Request row indicator — amber left border + subtle bg */
+.req-row.map-local {
+  border-left-color: #f59e0b;
+  background: rgba(245,158,11,0.06);
+}
+.req-row.map-local:hover { background: rgba(245,158,11,0.10); }
+.req-row.map-local.active { background: rgba(245,158,11,0.14); border-left-color: #f59e0b; }
+
+.domain-child.map-local {
+  border-left-color: #f59e0b;
+  background: rgba(245,158,11,0.06);
+}
+.domain-child.map-local:hover { background: rgba(245,158,11,0.10); }
+.domain-child.map-local.active { background: rgba(245,158,11,0.14); border-left-color: #f59e0b; }
+
+/* Small amber dot badge inline */
+.ml-badge {
+  display: inline-block;
+  font-size: 6px;
+  color: #f59e0b;
+  margin-left: 5px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+/* Source pill in overview tab */
+.ml-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fcd34d;
+  background: rgba(245,158,11,0.15);
+  border: 1px solid rgba(245,158,11,0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+/* Indicator sample in modal description */
+.ml-indicator-sample {
+  color: #fcd34d;
+}
+
+/* Map Local action button in detail bar */
+.ml-action-btn {
+  color: #fcd34d !important;
+}
+.ml-action-btn:hover {
+  background: rgba(245,158,11,0.15) !important;
+}
+
+/* ─── Map Local Modal ────────────────────────────────────────────────────── */
+.ml-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in 180ms ease;
+}
+
+.ml-modal-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+/* Mappings table */
+.ml-mappings-section {
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ml-mappings-hdr {
+  display: grid;
+  grid-template-columns: 52px 1fr 1fr 1.3fr;
+  padding: 5px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.ml-col-h {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+
+.ml-mappings-list {
+  min-height: 80px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ml-map-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 1fr 1.3fr;
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition);
+  position: relative;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+.ml-map-row:last-child { border-bottom: none; }
+.ml-map-row:hover { background: var(--surface-2); }
+
+.ml-map-row.selected {
+  background: rgba(245,158,11,0.07);
+}
+.ml-map-row.selected::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: #f59e0b;
+  border-radius: 0 2px 2px 0;
+}
+
+/* Enabled toggle */
+.ml-map-enabled {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ml-check-on {
+  background: rgba(245,158,11,0.25);
+  color: #fcd34d;
+  border: 1px solid rgba(245,158,11,0.4);
+}
+.ml-check-off {
+  background: var(--surface-3);
+  color: transparent;
+  border: 1px solid var(--border-2);
+}
+
+.ml-map-host { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-map-path { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-map-local { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+
+/* ─── Map Local Edit Modal ───────────────────────────────────────────────── */
+.ml-edit-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 500px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in 180ms ease;
+}
+
+.ml-edit-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ml-fieldset {
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 14px 16px 10px;
+  margin: 0;
+}
+.ml-fieldset legend {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  padding: 0 6px;
+}
+
+.ml-edit-grid {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.ml-edit-lbl {
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.ml-edit-input {
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.ml-edit-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+}
+.ml-edit-input::placeholder { color: var(--text-3); }
+
+.ml-edit-select {
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.ml-edit-path {
+  grid-column: 2;
+}
+
+.ml-case-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ml-case-row input[type="checkbox"] {
+  accent-color: #f59e0b;
+}
+
+/* Browse button next to local path input */
+.ml-path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  grid-column: 2;
+}
+.ml-path-row .ml-edit-input {
+  flex: 1;
+}
+.ml-browse-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition);
+}
+.ml-browse-btn:hover {
+  background: var(--surface-4);
+  color: var(--text);
+  border-color: var(--border-3);
+}
+
+/* ─── File Browser Modal ─────────────────────────────────────────────────── */
+.fb-modal {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 560px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-in 180ms ease;
+}
+
+.fb-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Path bar with up button, path input, go button */
+.fb-path-bar {
+  display: flex;
+  gap: 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.fb-up-btn, .fb-go-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.fb-up-btn:hover, .fb-go-btn:hover {
+  background: var(--surface-4);
+  color: var(--text);
+}
+.fb-path-input {
+  flex: 1;
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  padding: 4px 8px;
+  outline: none;
+}
+.fb-path-input:focus {
+  border-color: var(--accent);
+}
+
+/* File list */
+.fb-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 200px;
+  max-height: 400px;
+  padding: 4px 0;
+}
+
+.fb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+  transition: background var(--transition);
+  border-left: 2px solid transparent;
+}
+.fb-item:hover { background: var(--surface-2); }
+.fb-item.selected {
+  background: rgba(245,158,11,0.10);
+  border-left-color: #f59e0b;
+  color: var(--text);
+}
+.fb-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.fb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fb-loading, .fb-empty, .fb-error {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.fb-error { color: var(--danger); }

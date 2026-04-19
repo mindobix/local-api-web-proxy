@@ -68,10 +68,10 @@
           <span class="ssl-status-dot" id="sslStatusDot"></span>
         </button>
         <div class="tools-menu-sep"></div>
-        <button class="tools-menu-item tools-item-soon" disabled>
+        <button class="tools-menu-item" id="menuMapLocal">
           <span class="tool-icon-chip chip-amber"><svg width="14" height="14"><use href="#i-folder"/></svg></span>
           <span class="tool-item-label label-amber">Map Local…</span>
-          <span class="soon-badge">Soon</span>
+          <span class="ml-status-dot" id="mlStatusDot"></span>
         </button>
         <button class="tools-menu-item tools-item-soon" disabled>
           <span class="tool-icon-chip chip-cyan"><svg width="14" height="14"><use href="#i-redirect"/></svg></span>
@@ -174,6 +174,10 @@
         <button class="dtab-action" id="btnJsonToggle" title="Toggle JSON view">
           { } JSON
         </button>
+        <button class="dtab-action ml-action-btn" id="btnMapLocal" title="Map this endpoint to a local file">
+          <svg width="12" height="12"><use href="#i-folder"/></svg>
+          Map Local
+        </button>
         <button class="dtab-action" id="btnCurl" title="Copy as cURL">
           <svg width="12" height="12"><use href="#i-curl"/></svg>
           cURL
@@ -250,6 +254,149 @@
     <div class="ssl-modal-footer">
       <button class="ssl-footer-btn ssl-cancel" id="sslCancel">Cancel</button>
       <button class="ssl-footer-btn ssl-ok" id="sslOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MAP LOCAL SETTINGS MODAL ───────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="mlOverlay">
+  <div class="ml-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-folder"/></svg>
+        Map Local Settings
+      </div>
+      <button class="setup-close" id="mlClose">✕</button>
+    </div>
+
+    <div class="ml-modal-body">
+      <p class="setup-desc">
+        Map matching requests to local files instead of forwarding to the remote server.
+        When a request matches, the proxy serves the local file and the response appears
+        with an <strong class="ml-indicator-sample">amber indicator</strong> in the request list.
+      </p>
+
+      <label class="ssl-enable-row">
+        <div class="toggle-wrap">
+          <input type="checkbox" id="mlEnabled" class="toggle-input">
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </div>
+        <span class="ssl-enable-label">Enable Map Local</span>
+      </label>
+
+      <div class="ml-mappings-section" id="mlMappingsSection">
+        <div class="ml-mappings-hdr">
+          <span class="ml-col-h">Enabled</span>
+          <span class="ml-col-h">Host</span>
+          <span class="ml-col-h">Path</span>
+          <span class="ml-col-h">Local Path</span>
+        </div>
+        <div class="ml-mappings-list" id="mlMappingsList">
+          <!-- rows injected by JS -->
+        </div>
+        <div class="ssl-locations-actions">
+          <button class="ssl-loc-btn" id="mlAddMapping">
+            <svg width="13" height="13"><use href="#i-plus"/></svg>
+            Add
+          </button>
+          <button class="ssl-loc-btn ssl-loc-btn-danger" id="mlRemoveMapping">Remove</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-cancel" id="mlCancel">Cancel</button>
+      <button class="ssl-footer-btn ssl-ok" id="mlOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MAP LOCAL EDIT MODAL (single mapping) ─────────────────────────────── -->
+<div class="modal-overlay hidden" id="mlEditOverlay">
+  <div class="ml-edit-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-folder"/></svg>
+        Edit Mapping
+      </div>
+      <button class="setup-close" id="mlEditClose">✕</button>
+    </div>
+
+    <div class="ml-edit-body">
+      <fieldset class="ml-fieldset">
+        <legend>Map From</legend>
+        <div class="ml-edit-grid">
+          <label class="ml-edit-lbl">Protocol:</label>
+          <select id="mlEditProtocol" class="ml-edit-input ml-edit-select">
+            <option value="*">Any</option>
+            <option value="https">https</option>
+            <option value="http">http</option>
+          </select>
+
+          <label class="ml-edit-lbl">Host:</label>
+          <input type="text" id="mlEditHost" class="ml-edit-input" placeholder="e.g. api.example.com" spellcheck="false" autocomplete="off">
+
+          <label class="ml-edit-lbl">Port:</label>
+          <input type="text" id="mlEditPort" class="ml-edit-input" placeholder="e.g. 443" spellcheck="false" autocomplete="off">
+
+          <label class="ml-edit-lbl">Path:</label>
+          <input type="text" id="mlEditPath" class="ml-edit-input" placeholder="e.g. /api/users" spellcheck="false" autocomplete="off">
+
+          <label class="ml-edit-lbl">Query:</label>
+          <input type="text" id="mlEditQuery" class="ml-edit-input" placeholder="e.g. id=123" spellcheck="false" autocomplete="off">
+        </div>
+      </fieldset>
+
+      <fieldset class="ml-fieldset">
+        <legend>Map To</legend>
+        <div class="ml-edit-grid">
+          <label class="ml-edit-lbl">Local path:</label>
+          <div class="ml-path-row">
+            <input type="text" id="mlEditLocalPath" class="ml-edit-input ml-edit-path" placeholder="e.g. C:\mocks\users.json or /Users/me/mocks/" spellcheck="false" autocomplete="off">
+            <button class="ml-browse-btn" id="mlBrowseBtn" type="button">Browse…</button>
+          </div>
+        </div>
+        <label class="ml-case-row">
+          <input type="checkbox" id="mlEditCaseSensitive">
+          <span>Case-sensitive</span>
+        </label>
+      </fieldset>
+    </div>
+
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-cancel" id="mlEditCancel">Cancel</button>
+      <button class="ssl-footer-btn ssl-ok" id="mlEditOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── FILE BROWSER MODAL ─────────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="fbOverlay">
+  <div class="fb-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-folder"/></svg>
+        Choose File
+      </div>
+      <button class="setup-close" id="fbClose">✕</button>
+    </div>
+
+    <div class="fb-body">
+      <div class="fb-path-bar">
+        <button class="fb-up-btn" id="fbUp" title="Go to parent directory">↑</button>
+        <input type="text" id="fbPathInput" class="fb-path-input" spellcheck="false" autocomplete="off">
+        <button class="fb-go-btn" id="fbGo">Go</button>
+      </div>
+      <div class="fb-list" id="fbList">
+        <div class="fb-loading">Loading…</div>
+      </div>
+    </div>
+
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-cancel" id="fbCancel">Cancel</button>
+      <button class="ssl-footer-btn ssl-ok" id="fbSelect">Select</button>
     </div>
   </div>
 </div>

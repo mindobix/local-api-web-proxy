@@ -63,6 +63,8 @@ const LEAF_KEY_PATH  = path.join(CERTS_DIR, 'leaf.key');
 // ─── State ────────────────────────────────────────────────────────────────────
 let recording = true;
 let sslProxying = { enabled: true, locations: [{ host: '*', port: '' }] };
+let mapLocal    = { enabled: false, mappings: [] };
+// Each mapping: { enabled, protocol, host, port, path, query, localPath, caseSensitive }
 const captures       = []; // newest first
 const captureBuffers = new Map(); // id → { buf, contentType } for binary responses
 const emitter        = new EventEmitter();
@@ -96,6 +98,129 @@ function sslProxyingAllows(hostname, port) {
 
     const pMatch = !loc.port || loc.port === '*' || loc.port === String(port);
     return hMatch && pMatch;
+  });
+}
+
+// ─── Map Local Matching ───────────────────────────────────────────────────────
+function findMapLocalMatch(proto, hostname, port, urlPath) {
+  if (!mapLocal.enabled || !mapLocal.mappings.length) return null;
+
+  const h = hostname.toLowerCase();
+  const p = String(port);
+  const pathAndQuery = urlPath || '/';
+  const [pathPart, queryPart] = pathAndQuery.split('?');
+
+  for (const m of mapLocal.mappings) {
+    if (!m.enabled || !m.localPath) continue;
+
+    // Protocol check
+    if (m.protocol && m.protocol !== '*' && m.protocol !== proto) continue;
+
+    // Host check
+    const mHost = (m.host || '').trim().toLowerCase();
+    if (mHost && mHost !== '*') {
+      if (mHost.startsWith('*.')) {
+        const base = mHost.slice(2);
+        if (h !== base && !h.endsWith('.' + base)) continue;
+      } else {
+        if (h !== mHost) continue;
+      }
+    }
+
+    // Port check
+    if (m.port && m.port !== '*' && m.port !== p) continue;
+
+    // Path check
+    const mPath = (m.path || '').trim();
+    if (mPath && mPath !== '*') {
+      const compare = m.caseSensitive
+        ? (a, b) => a === b || a.startsWith(b)
+        : (a, b) => a.toLowerCase() === b.toLowerCase() || a.toLowerCase().startsWith(b.toLowerCase());
+      if (!compare(pathPart, mPath)) continue;
+    }
+
+    // Query check
+    const mQuery = (m.query || '').trim();
+    if (mQuery && mQuery !== '*') {
+      if (!queryPart || !queryPart.includes(mQuery)) continue;
+    }
+
+    return m;
+  }
+  return null;
+}
+
+// Serve a mapped local file for a request
+function serveMapLocal(mapping, req, res, captureInfo) {
+  const localPath = mapping.localPath;
+
+  // If localPath is a directory, try to find a file based on the request path
+  let filePath = localPath;
+  try {
+    const stat = fs.statSync(localPath);
+    if (stat.isDirectory()) {
+      // Use request path to find a file in the directory
+      const safePath = (captureInfo.urlPath || '/').split('?')[0].replace(/\.\./g, '');
+      filePath = path.join(localPath, safePath);
+      // If still a directory or doesn't exist, try index.json
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(localPath, 'index.json');
+      }
+    }
+  } catch {
+    // File doesn't exist — will be caught below
+  }
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      if (!res.headersSent) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Map Local: file not found — ' + filePath);
+      }
+      if (recording) {
+        recordCapture({
+          ...captureInfo,
+          status: 404, statusText: 'Map Local File Not Found',
+          resHeaders: { 'content-type': 'text/plain', 'x-map-local': filePath },
+          resBuf: Buffer.from('Map Local: file not found — ' + filePath),
+          mapLocal: true,
+        });
+      }
+      return;
+    }
+
+    // Guess content-type from extension
+    const ext = path.extname(filePath).toLowerCase();
+    const ctMap = {
+      '.json': 'application/json; charset=utf-8',
+      '.xml':  'application/xml; charset=utf-8',
+      '.html': 'text/html; charset=utf-8',
+      '.txt':  'text/plain; charset=utf-8',
+      '.js':   'application/javascript; charset=utf-8',
+      '.css':  'text/css; charset=utf-8',
+    };
+    const ct = ctMap[ext] || 'application/octet-stream';
+
+    const resHeaders = {
+      'content-type':   ct,
+      'content-length': String(data.length),
+      'x-map-local':    filePath,
+    };
+
+    if (!res.headersSent) {
+      res.writeHead(200, resHeaders);
+      res.end(data);
+    }
+
+    if (recording) {
+      recordCapture({
+        ...captureInfo,
+        status: 200, statusText: 'OK (Map Local)',
+        resHeaders,
+        resBuf: data,
+        mapLocal: true,
+      });
+    }
   });
 }
 
@@ -232,7 +357,7 @@ function getCertForHost(hostname) {
 // ─── Shared capture logic ──────────────────────────────────────────────────────
 async function recordCapture({ id, t0, method, fullUrl, host, port, path: urlPath,
                                proto, reqHeaders, reqBuf, status, statusText,
-                               resHeaders, resBuf, error }) {
+                               resHeaders, resBuf, error, mapLocal: isMapLocal }) {
   const encoding = (resHeaders || {})['content-encoding'] || '';
   const decoded  = await decompressBody(resBuf || Buffer.alloc(0), encoding);
   const ct       = ((resHeaders || {})['content-type'] || '').split(';')[0].trim();
@@ -257,6 +382,7 @@ async function recordCapture({ id, t0, method, fullUrl, host, port, path: urlPat
     reqSize:  reqBuf  ? reqBuf.length : 0,
     resSize:  resBuf  ? resBuf.length : 0,
     error: error || null,
+    mapLocal: isMapLocal || false,
   };
 
   // Store binary body for on-demand serving (images, etc.)
@@ -286,6 +412,20 @@ const interceptServer = http.createServer((req, res) => {
 
   const reqChunks = [];
   req.on('data', c => reqChunks.push(c));
+
+  // ── Map Local check (HTTPS) ──
+  const mapLocalMatch = findMapLocalMatch('https', hostname, port, req.url);
+  if (mapLocalMatch) {
+    req.on('end', () => {
+      serveMapLocal(mapLocalMatch, req, res, {
+        id, t0, method: req.method, fullUrl,
+        host: hostname, port, path: req.url, proto: 'https',
+        reqHeaders: req.headers,
+        reqBuf: Buffer.concat(reqChunks),
+      });
+    });
+    return;
+  }
 
   const fwdHeaders = { ...req.headers, host: urlHost };
   delete fwdHeaders['proxy-connection'];
@@ -408,6 +548,23 @@ function createProxy() {
     catch { res.writeHead(400); res.end('Bad Request'); return; }
 
     const reqChunks  = [];
+
+    // ── Map Local check (HTTP) ──
+    const mapLocalMatch = findMapLocalMatch('http', url.hostname, url.port || 80, url.pathname + (url.search || ''));
+    if (mapLocalMatch) {
+      req.on('data', c => reqChunks.push(c));
+      req.on('end', () => {
+        serveMapLocal(mapLocalMatch, req, res, {
+          id, t0, method: req.method, fullUrl: req.url,
+          host: url.hostname, port: url.port || 80,
+          path: url.pathname + (url.search || ''), proto: 'http',
+          reqHeaders: req.headers,
+          reqBuf: Buffer.concat(reqChunks),
+        });
+      });
+      return;
+    }
+
     const fwdHeaders = { ...req.headers };
     delete fwdHeaders['proxy-connection'];
     delete fwdHeaders['proxy-authorization'];
@@ -515,6 +672,86 @@ function createDashboard() {
         } catch {
           res.writeHead(400); res.end('Bad Request');
         }
+      });
+      return;
+    }
+
+    if (req.url === '/api/map-local' && req.method === 'GET') {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(mapLocal));
+      return;
+    }
+
+    if (req.url === '/api/map-local' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const update = JSON.parse(body);
+          if (typeof update.enabled === 'boolean') mapLocal.enabled = update.enabled;
+          if (Array.isArray(update.mappings))       mapLocal.mappings = update.mappings;
+          broadcast({ type: 'map_local', data: mapLocal });
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(mapLocal));
+        } catch {
+          res.writeHead(400); res.end('Bad Request');
+        }
+      });
+      return;
+    }
+
+    // File browser for Map Local — lists directory contents
+    if (req.url.startsWith('/api/browse')) {
+      const parsed = new URL(req.url, 'http://localhost');
+      let dir = parsed.searchParams.get('path') || '';
+
+      // Default starting directory
+      if (!dir) {
+        dir = process.platform === 'win32'
+          ? process.env.USERPROFILE || 'C:\\'
+          : process.env.HOME || '/';
+      }
+
+      // Resolve to absolute
+      dir = path.resolve(dir);
+
+      fs.stat(dir, (err, stat) => {
+        if (err) {
+          res.writeHead(404, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Path not found', path: dir }));
+          return;
+        }
+
+        // If it's a file, return it as the selected file
+        if (!stat.isDirectory()) {
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ path: dir, isFile: true }));
+          return;
+        }
+
+        fs.readdir(dir, { withFileTypes: true }, (err2, entries) => {
+          if (err2) {
+            res.writeHead(403, { ...cors, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Cannot read directory', path: dir }));
+            return;
+          }
+
+          const parent = path.dirname(dir);
+          const items = entries
+            .filter(e => !e.name.startsWith('.'))
+            .map(e => ({
+              name: e.name,
+              isDir: e.isDirectory(),
+              path: path.join(dir, e.name),
+            }))
+            .sort((a, b) => {
+              if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            });
+
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ path: dir, parent: parent !== dir ? parent : null, items }));
+        });
       });
       return;
     }

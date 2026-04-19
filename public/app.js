@@ -15,6 +15,7 @@ const S = {
   connected:   false,
   domainOpen:  {},   // hostname → bool
   sslProxying: { enabled: true, locations: [{ host: '*', port: '' }] },
+  mapLocal:    { enabled: false, mappings: [] },
 };
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -86,6 +87,11 @@ function handle(msg) {
     case 'ssl_proxying':
       S.sslProxying = msg.data;
       updateSslStatusDot();
+      break;
+
+    case 'map_local':
+      S.mapLocal = msg.data;
+      updateMlStatusDot();
       break;
   }
 }
@@ -191,7 +197,7 @@ function renderTimeline() {
 
 function makeRow(c) {
   const div = document.createElement('div');
-  div.className = 'req-row' + (c.id === S.selectedId ? ' active' : '');
+  div.className = 'req-row' + (c.id === S.selectedId ? ' active' : '') + (c.mapLocal ? ' map-local' : '');
   div.dataset.id = c.id;
 
   const mClass  = 'm-' + (c.method || 'other');
@@ -200,12 +206,15 @@ function makeRow(c) {
   const lockIcon = c.proto === 'https'
     ? `<svg width="8" height="8" style="margin-right:2px;color:var(--success);opacity:.7"><use href="#i-lock"/></svg>`
     : '';
+  const mlIcon = c.mapLocal
+    ? `<span class="ml-badge" title="Map Local">⬤</span>`
+    : '';
 
   div.innerHTML = `
     <span class="m-badge ${mClass}">${esc(c.method || '?')}</span>
     <span><span class="s-badge ${sClass}">${c.status || '—'}</span></span>
     <div class="row-url">
-      <span class="row-host">${lockIcon}${esc(c.host)}</span>
+      <span class="row-host">${lockIcon}${esc(c.host)}${mlIcon}</span>
     </div>
     <span class="row-path-col" title="${esc(c.path)}">${esc(truncate(c.path, 28))}</span>
     <span class="row-size">${fmtBytes(c.resSize)}</span>
@@ -259,9 +268,9 @@ function renderDomainTree() {
       </div>
       <div class="domain-children">
         ${items.map(c => `
-          <div class="domain-child ${c.id === S.selectedId ? 'active' : ''}" data-id="${c.id}">
+          <div class="domain-child ${c.id === S.selectedId ? 'active' : ''} ${c.mapLocal ? 'map-local' : ''}" data-id="${c.id}">
             <span class="dc-method m-${c.method}">${esc(c.method)}</span>
-            <span class="dc-path" title="${esc(c.path)}">${esc(truncate(c.path, 40))}</span>
+            <span class="dc-path" title="${esc(c.path)}">${esc(truncate(c.path, 40))}${c.mapLocal ? '<span class="ml-badge" title="Map Local">⬤</span>' : ''}</span>
             <span class="dc-status ${statusClass(c.status)}">${c.status || '—'}</span>
           </div>
         `).join('')}
@@ -310,6 +319,11 @@ function renderDetail(c) {
   // Wire cURL button
   $('btnCurl').onclick = () => {
     copyText(generateCurl(c), $('btnCurl'));
+  };
+
+  // Wire Map Local button
+  $('btnMapLocal').onclick = () => {
+    mapLocalFromCapture(c);
   };
 
   // Re-render current active tab
@@ -363,6 +377,7 @@ function renderOverview(c) {
       <div class="ov-row"><div class="ov-key">Req Size</div><div class="ov-val">${fmtBytes(c.reqSize)}</div></div>
       <div class="ov-row"><div class="ov-key">Res Size</div><div class="ov-val">${fmtBytes(c.resSize)}</div></div>
       <div class="ov-row"><div class="ov-key">Time</div><div class="ov-val">${fmtTime(c.ts)}</div></div>
+      ${c.mapLocal ? `<div class="ov-row"><div class="ov-key">Source</div><div class="ov-val"><span class="ml-source-pill">⬤ Map Local</span>${c.resHeaders && c.resHeaders['x-map-local'] ? ` <span style="color:var(--text-3);font-size:11px">${esc(c.resHeaders['x-map-local'])}</span>` : ''}</div></div>` : ''}
     </div>
     <div class="timing-section">
       <div class="timing-title">Timing</div>
@@ -904,10 +919,21 @@ function initToolsDropdown() {
     openSslModal();
   });
 
+  $('menuMapLocal').addEventListener('click', () => {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+    openMlModal();
+  });
+
   // Fetch current settings from server
   fetch('/api/ssl-proxying')
     .then(r => r.json())
     .then(data => { S.sslProxying = data; updateSslStatusDot(); })
+    .catch(() => {});
+
+  fetch('/api/map-local')
+    .then(r => r.json())
+    .then(data => { S.mapLocal = data; updateMlStatusDot(); })
     .catch(() => {});
 }
 
@@ -916,6 +942,13 @@ function updateSslStatusDot() {
   if (!dot) return;
   dot.classList.remove('on', 'off');
   dot.classList.add(S.sslProxying.enabled ? 'on' : 'off');
+}
+
+function updateMlStatusDot() {
+  const dot = $('mlStatusDot');
+  if (!dot) return;
+  dot.classList.remove('on', 'off');
+  dot.classList.add(S.mapLocal.enabled ? 'on' : 'off');
 }
 
 // ─── SSL Proxying Modal ───────────────────────────────────────────────────────
@@ -1079,6 +1112,340 @@ function initSslModal() {
   });
 }
 
+// ─── Map Local Modal ─────────────────────────────────────────────────────────
+let _mlDraft = null;
+let _mlSelectedRow = -1;
+let _mlEditIdx = -1; // index of mapping being edited in sub-modal
+
+function openMlModal(prefill) {
+  _mlDraft = {
+    enabled:  S.mapLocal.enabled,
+    mappings: S.mapLocal.mappings.map(m => ({ ...m })),
+  };
+  _mlSelectedRow = -1;
+  $('mlEnabled').checked = _mlDraft.enabled;
+  renderMlMappings();
+  $('mlOverlay').classList.remove('hidden');
+
+  // If prefill provided (from "Map this request" action), auto-add
+  if (prefill) {
+    _mlDraft.mappings.push({
+      enabled: true,
+      protocol: prefill.proto || '*',
+      host:     prefill.host || '',
+      port:     prefill.port || '',
+      path:     prefill.path || '',
+      query:    '',
+      localPath: '',
+      caseSensitive: false,
+    });
+    _mlSelectedRow = _mlDraft.mappings.length - 1;
+    renderMlMappings();
+    // Open edit modal for the new mapping
+    openMlEditModal(_mlSelectedRow);
+  }
+}
+
+function closeMlModal() {
+  $('mlOverlay').classList.add('hidden');
+  _mlDraft = null;
+  _mlSelectedRow = -1;
+}
+
+function renderMlMappings() {
+  const list = $('mlMappingsList');
+  list.innerHTML = '';
+  if (!_mlDraft) return;
+
+  _mlDraft.mappings.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.className = 'ml-map-row' + (i === _mlSelectedRow ? ' selected' : '');
+
+    const enabledClass = m.enabled ? 'ml-check-on' : 'ml-check-off';
+    const host = m.host || '*';
+    const pathDisplay = m.path || '/';
+    const localDisplay = m.localPath || '(not set)';
+
+    row.innerHTML = `
+      <span class="ml-map-enabled ${enabledClass}" data-idx="${i}" title="Toggle enabled">
+        ${m.enabled ? '✓' : ''}
+      </span>
+      <span class="ml-map-host">${esc(host)}</span>
+      <span class="ml-map-path" title="${esc(pathDisplay)}">${esc(truncate(pathDisplay, 20))}</span>
+      <span class="ml-map-local" title="${esc(localDisplay)}">${esc(truncate(localDisplay, 25))}</span>
+    `;
+
+    row.addEventListener('click', e => {
+      if (e.target.closest('.ml-map-enabled')) {
+        _mlDraft.mappings[i].enabled = !_mlDraft.mappings[i].enabled;
+        renderMlMappings();
+        return;
+      }
+      _mlSelectedRow = i;
+      renderMlMappings();
+    });
+
+    row.addEventListener('dblclick', e => {
+      if (e.target.closest('.ml-map-enabled')) return;
+      openMlEditModal(i);
+    });
+
+    list.appendChild(row);
+  });
+}
+
+function openMlEditModal(idx) {
+  _mlEditIdx = idx;
+  const m = _mlDraft.mappings[idx];
+  if (!m) return;
+
+  $('mlEditProtocol').value     = m.protocol || '*';
+  $('mlEditHost').value         = m.host || '';
+  $('mlEditPort').value         = m.port || '';
+  $('mlEditPath').value         = m.path || '';
+  $('mlEditQuery').value        = m.query || '';
+  $('mlEditLocalPath').value    = m.localPath || '';
+  $('mlEditCaseSensitive').checked = m.caseSensitive || false;
+
+  $('mlEditOverlay').classList.remove('hidden');
+}
+
+function closeMlEditModal() {
+  $('mlEditOverlay').classList.add('hidden');
+  _mlEditIdx = -1;
+}
+
+function saveMlEditModal() {
+  if (_mlEditIdx < 0 || !_mlDraft) return;
+  const m = _mlDraft.mappings[_mlEditIdx];
+  m.protocol      = $('mlEditProtocol').value;
+  m.host          = $('mlEditHost').value.trim();
+  m.port          = $('mlEditPort').value.trim();
+  m.path          = $('mlEditPath').value.trim();
+  m.query         = $('mlEditQuery').value.trim();
+  m.localPath     = $('mlEditLocalPath').value.trim();
+  m.caseSensitive = $('mlEditCaseSensitive').checked;
+
+  closeMlEditModal();
+  renderMlMappings();
+}
+
+function initMlModal() {
+  $('mlEnabled').addEventListener('change', e => {
+    if (_mlDraft) _mlDraft.enabled = e.target.checked;
+  });
+
+  $('mlAddMapping').addEventListener('click', () => {
+    if (!_mlDraft) return;
+    _mlDraft.mappings.push({
+      enabled: true, protocol: '*', host: '', port: '', path: '', query: '',
+      localPath: '', caseSensitive: false,
+    });
+    _mlSelectedRow = _mlDraft.mappings.length - 1;
+    renderMlMappings();
+    openMlEditModal(_mlSelectedRow);
+  });
+
+  $('mlRemoveMapping').addEventListener('click', () => {
+    if (!_mlDraft || _mlSelectedRow < 0 || !_mlDraft.mappings.length) return;
+    _mlDraft.mappings.splice(_mlSelectedRow, 1);
+    _mlSelectedRow = Math.min(_mlSelectedRow, _mlDraft.mappings.length - 1);
+    renderMlMappings();
+  });
+
+  $('mlOk').addEventListener('click', async () => {
+    if (!_mlDraft) return;
+    try {
+      const res = await fetch('/api/map-local', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(_mlDraft),
+      });
+      const data = await res.json();
+      S.mapLocal = data;
+      updateMlStatusDot();
+      toast(`Map Local ${data.enabled ? 'enabled' : 'disabled'} (${data.mappings.length} mapping${data.mappings.length !== 1 ? 's' : ''})`, 'success');
+    } catch {
+      toast('Failed to save Map Local settings', 'error');
+    }
+    closeMlModal();
+  });
+
+  $('mlCancel').addEventListener('click', closeMlModal);
+  $('mlClose').addEventListener('click',  closeMlModal);
+  $('mlOverlay').addEventListener('click', e => {
+    if (e.target === $('mlOverlay')) closeMlModal();
+  });
+
+  // Edit sub-modal
+  $('mlEditOk').addEventListener('click', saveMlEditModal);
+  $('mlEditCancel').addEventListener('click', closeMlEditModal);
+  $('mlEditClose').addEventListener('click',  closeMlEditModal);
+  $('mlEditOverlay').addEventListener('click', e => {
+    if (e.target === $('mlEditOverlay')) closeMlEditModal();
+  });
+
+  // Browse button opens file browser, feeds path back into the input
+  $('mlBrowseBtn').addEventListener('click', () => {
+    const currentVal = $('mlEditLocalPath').value.trim();
+    openFileBrowser(currentVal, selectedPath => {
+      $('mlEditLocalPath').value = selectedPath;
+    });
+  });
+}
+
+// Helper: open Map Local pre-filled from the currently selected capture
+function mapLocalFromCapture(c) {
+  if (!c) return;
+  let urlPath = c.path || '/';
+  let port = c.port || '';
+  if (c.proto === 'https' && port === '443') port = '';
+  if (c.proto === 'http'  && port === '80')  port = '';
+
+  openMlModal({
+    proto: c.proto,
+    host:  c.host,
+    port:  port,
+    path:  urlPath.split('?')[0],
+  });
+}
+
+// ─── File Browser Modal ──────────────────────────────────────────────────────
+let _fbCurrentPath = '';
+let _fbSelectedPath = '';
+let _fbOnSelect = null; // callback(path) when user confirms selection
+
+function openFileBrowser(startPath, onSelect) {
+  _fbOnSelect = onSelect;
+  _fbSelectedPath = '';
+  $('fbOverlay').classList.remove('hidden');
+  browseDir(startPath || '');
+}
+
+function closeFileBrowser() {
+  $('fbOverlay').classList.add('hidden');
+  _fbOnSelect = null;
+}
+
+async function browseDir(dir) {
+  const list = $('fbList');
+  list.innerHTML = '<div class="fb-loading">Loading…</div>';
+
+  try {
+    const params = dir ? `?path=${encodeURIComponent(dir)}` : '';
+    const res = await fetch(`/api/browse${params}`);
+    const data = await res.json();
+
+    if (data.error) {
+      list.innerHTML = `<div class="fb-error">${esc(data.error)}</div>`;
+      return;
+    }
+
+    // If server returned a file, select it directly
+    if (data.isFile) {
+      _fbSelectedPath = data.path;
+      _fbCurrentPath = data.path.substring(0, data.path.lastIndexOf('\\') || data.path.lastIndexOf('/'));
+      $('fbPathInput').value = _fbCurrentPath;
+      renderFileBrowser({ path: _fbCurrentPath, parent: null, items: [] });
+      // Re-browse the parent directory
+      browseDir(_fbCurrentPath);
+      return;
+    }
+
+    _fbCurrentPath = data.path;
+    $('fbPathInput').value = data.path;
+    renderFileBrowser(data);
+  } catch {
+    list.innerHTML = '<div class="fb-error">Failed to load directory</div>';
+  }
+}
+
+function renderFileBrowser(data) {
+  const list = $('fbList');
+  list.innerHTML = '';
+
+  if (!data.items || !data.items.length) {
+    list.innerHTML = '<div class="fb-empty">Empty directory</div>';
+    return;
+  }
+
+  for (const item of data.items) {
+    const row = document.createElement('div');
+    row.className = 'fb-item' + (item.path === _fbSelectedPath ? ' selected' : '');
+    row.dataset.path = item.path;
+    row.dataset.isDir = item.isDir ? '1' : '0';
+
+    const icon = item.isDir ? '📁' : '📄';
+    row.innerHTML = `<span class="fb-icon">${icon}</span><span class="fb-name">${esc(item.name)}</span>`;
+
+    row.addEventListener('click', () => {
+      _fbSelectedPath = item.path;
+      list.querySelectorAll('.fb-item').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+    });
+
+    row.addEventListener('dblclick', () => {
+      if (item.isDir) {
+        browseDir(item.path);
+      } else {
+        // Double-click file = select and confirm
+        _fbSelectedPath = item.path;
+        confirmFileBrowser();
+      }
+    });
+
+    list.appendChild(row);
+  }
+}
+
+function confirmFileBrowser() {
+  if (!_fbSelectedPath) {
+    toast('Select a file or folder first', 'info');
+    return;
+  }
+  if (_fbOnSelect) _fbOnSelect(_fbSelectedPath);
+  closeFileBrowser();
+}
+
+function initFileBrowser() {
+  $('fbClose').addEventListener('click', closeFileBrowser);
+  $('fbCancel').addEventListener('click', closeFileBrowser);
+  $('fbOverlay').addEventListener('click', e => {
+    if (e.target === $('fbOverlay')) closeFileBrowser();
+  });
+
+  $('fbSelect').addEventListener('click', confirmFileBrowser);
+
+  $('fbUp').addEventListener('click', () => {
+    // Go to parent
+    const sep = _fbCurrentPath.includes('\\') ? '\\' : '/';
+    const parts = _fbCurrentPath.split(sep).filter(Boolean);
+    if (parts.length > 1) {
+      parts.pop();
+      const parent = _fbCurrentPath.startsWith(sep)
+        ? sep + parts.join(sep)
+        : parts.join(sep) + sep;
+      browseDir(parent);
+    } else if (_fbCurrentPath.match(/^[A-Z]:\\/i)) {
+      // Windows root — can't go higher from C:\
+    } else {
+      browseDir('/');
+    }
+  });
+
+  $('fbGo').addEventListener('click', () => {
+    const val = $('fbPathInput').value.trim();
+    if (val) browseDir(val);
+  });
+
+  $('fbPathInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      const val = $('fbPathInput').value.trim();
+      if (val) browseDir(val);
+    }
+  });
+}
+
 // ─── Navbar Action Buttons ────────────────────────────────────────────────────
 function initNavActions() {
   $('recBadge').addEventListener('click',     () => send({ type: 'toggle_recording' }));
@@ -1176,6 +1543,8 @@ function init() {
   initNavActions();
   initToolsDropdown();
   initSslModal();
+  initMlModal();
+  initFileBrowser();
   initSetupModal();
   initResize();
   initKeyboard();
