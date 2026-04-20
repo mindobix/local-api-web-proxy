@@ -64,7 +64,7 @@ const LEAF_KEY_PATH  = path.join(CERTS_DIR, 'leaf.key');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let recording = true;
-let sslProxying = { enabled: true, locations: [{ host: '*', port: '' }] };
+let sslProxying = { enabled: true, locations: [{ host: '*', port: '', cache: true }] };
 let mapLocal    = { enabled: false, mappings: [] };
 // Each mapping: { enabled, protocol, host, port, path, query, localPath, caseSensitive }
 let mapRemote   = { enabled: false, rules: [] };
@@ -178,12 +178,41 @@ function shouldCaptureHost(hostname, port) {
   return sslProxyingAllows(hostname, port);
 }
 
+// Host-scoped cache permission — returns true iff at least one SSL Proxying
+// location matches this host AND has its `cache` flag enabled. Independent
+// of port (caching is a per-host decision).
+//
+// When SSL Proxying is disabled entirely, we fall back to the legacy
+// "cache anything JSON" behavior so disabling the filter doesn't silently
+// kill the Cached tab.
+function sslHostAllowsCache(hostname) {
+  if (!sslProxying.enabled) return true;
+  if (!sslProxying.locations.length) return true;
+  const h = hostname.toLowerCase();
+  return sslProxying.locations.some(loc => {
+    const host = (loc.host || '').trim().split('/')[0].toLowerCase();
+    let hMatch;
+    if (!host || host === '*') {
+      hMatch = true;
+    } else if (host.startsWith('*.')) {
+      const base = host.slice(2);
+      hMatch = h === base || h.endsWith('.' + base);
+    } else {
+      hMatch = h === host || h.endsWith('.' + host);
+    }
+    return hMatch && loc.cache !== false;
+  });
+}
+
 // ─── JSON Cache Lookup ────────────────────────────────────────────────────────
 // Powers the /<host>/<path> replay route. Walks the in-memory capture ring
 // (newest-first) and returns the most recent successful GET capture whose
 // content-type declares JSON and that matches the requested host + path+query
 // exactly. Returns null if nothing matches.
 function findCachedResponse(host, pathAndQuery) {
+  // Host-level opt-in: the SSL Proxying entry for this host must have its
+  // cache flag enabled. Users toggle this per row in the SSL Proxying dialog.
+  if (!sslHostAllowsCache(host)) return null;
   for (const c of captures) {
     if (c.host !== host) continue;
     if (c.method !== 'GET') continue;
@@ -1130,7 +1159,17 @@ function createDashboard() {
         try {
           const update = JSON.parse(body);
           if (typeof update.enabled === 'boolean') sslProxying.enabled = update.enabled;
-          if (Array.isArray(update.locations))       sslProxying.locations = update.locations;
+          if (Array.isArray(update.locations)) {
+            // Normalize: every location carries host, port, and cache. Missing
+            // cache defaults to true so legacy payloads keep today's behavior
+            // (all matched hosts cache their JSON). The UI uses explicit
+            // cache:false to opt a host out of the Cached tab / replay route.
+            sslProxying.locations = update.locations.map(l => ({
+              host:  (l && typeof l.host === 'string') ? l.host : '',
+              port:  (l && typeof l.port === 'string') ? l.port : '',
+              cache: (l && l.cache === false) ? false : true,
+            }));
+          }
           broadcast({ type: 'ssl_proxying', data: sslProxying });
           res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
           res.end(JSON.stringify(sslProxying));
@@ -1420,7 +1459,9 @@ function createDashboard() {
               error: 'No cached response for that URL',
               host,
               path: pq,
-              hint:  'Send this request through the proxy at least once; the JSON response will then be served here.',
+              hint:  sslHostAllowsCache(host)
+                ? 'Send this request through the proxy at least once; the JSON response will then be served here.'
+                : 'This host is not enabled for caching. Open SSL Proxying Settings and check the Cache column for this domain.',
             }, null, 2));
           }
           return;

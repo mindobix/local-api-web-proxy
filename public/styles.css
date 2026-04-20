@@ -1531,7 +1531,7 @@ body {
 }
 .ssl-locations-hdr {
   display: grid;
-  grid-template-columns: 1fr 72px;
+  grid-template-columns: 1fr 72px 56px;
   padding: 5px 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
@@ -1543,7 +1543,8 @@ body {
   letter-spacing: 0.07em;
   color: var(--text-3);
 }
-.ssl-loc-port-h { text-align: center; }
+.ssl-loc-port-h  { text-align: center; }
+.ssl-loc-cache-h { text-align: center; cursor: help; }
 
 .ssl-locations-list {
   min-height: 100px;
@@ -1554,7 +1555,7 @@ body {
 /* Two-column row: host | port — no checkbox column */
 .ssl-loc-row {
   display: grid;
-  grid-template-columns: 1fr 72px;
+  grid-template-columns: 1fr 72px 56px;
   align-items: stretch;
   border-bottom: 1px solid var(--border);
   transition: background var(--transition);
@@ -2925,6 +2926,52 @@ details[open] > .mr-fieldset-hdr .mr-chevron { transform: rotate(180deg); }
 }
 .cached-url-copy:hover { color: var(--text); background: var(--surface-4); border-color: var(--border-3); }
 .cached-url-copy.copied { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.14); }
+
+/* SSL Proxying row — Cache column (third cell) */
+.ssl-loc-cache {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0 6px;
+  border-left: 1px solid var(--border);
+  background: transparent;
+}
+.ssl-loc-cache input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+/* Cached tab → "Configure in SSL Proxying..." link on the left of the toolbar */
+.cached-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.cached-config-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.cached-config-link:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+.cached-config-link svg { flex-shrink: 0; }
 
 /* ─── Session dropdown ─────────────────────────────────────────────────── */
 

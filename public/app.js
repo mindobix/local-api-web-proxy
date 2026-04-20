@@ -113,6 +113,10 @@ function handle(msg) {
     case 'ssl_proxying':
       S.sslProxying = msg.data;
       updateSslStatusDot();
+      // Cached tab + its count pill depend on the per-host cache flag, so
+      // refresh both when the SSL Proxying settings change.
+      updateCachedBadge();
+      if (S.view === 'cached') renderCached();
       break;
 
     case 'map_local':
@@ -247,15 +251,38 @@ function updateDebugBadge() {
 }
 
 // ─── Cache helpers ────────────────────────────────────────────────────────────
+// Mirrors the server's sslHostAllowsCache() so the Cached tab reflects the
+// per-host Cache toggle immediately, without waiting for a server round-trip.
+function clientSslHostAllowsCache(hostname) {
+  const ssl = S.sslProxying || {};
+  if (!ssl.enabled) return true;
+  if (!ssl.locations || !ssl.locations.length) return true;
+  const h = (hostname || '').toLowerCase();
+  return ssl.locations.some(loc => {
+    const host = (loc.host || '').trim().split('/')[0].toLowerCase();
+    let hMatch;
+    if (!host || host === '*') hMatch = true;
+    else if (host.startsWith('*.')) {
+      const base = host.slice(2);
+      hMatch = h === base || h.endsWith('.' + base);
+    } else {
+      hMatch = h === host || h.endsWith('.' + host);
+    }
+    return hMatch && loc.cache !== false;
+  });
+}
+
 // A capture is replayable at /<host>/<path> when it's a successful GET with a
-// JSON content-type and a body we actually kept.
+// JSON content-type, a body we actually kept, AND its host is enabled for
+// caching in the SSL Proxying list.
 function isCacheable(c) {
   if (!c) return false;
   if ((c.method || '').toUpperCase() !== 'GET') return false;
   if (!c.status || c.status >= 400) return false;
   if (!c.resBody) return false;
   const ct = (c.contentType || '').toLowerCase();
-  return ct.includes('json');
+  if (!ct.includes('json')) return false;
+  return clientSslHostAllowsCache(c.host);
 }
 
 // Deduplicate by host+path — the most recent capture wins since S.captures is
@@ -1143,6 +1170,11 @@ function initViewTabs() {
       renderDebug();
     });
   });
+
+  // Cached view → "Configure in SSL Proxying…" link opens the SSL modal,
+  // positioned at the Cache column so users land where they need to click.
+  const cfgLink = $('cachedConfigLink');
+  if (cfgLink) cfgLink.addEventListener('click', () => openSslModal());
 }
 
 // ─── Detail Tabs ──────────────────────────────────────────────────────────────
@@ -1409,7 +1441,13 @@ let _sslSelectedRow = -1;
 function openSslModal() {
   _sslDraft = {
     enabled:   S.sslProxying.enabled,
-    locations: S.sslProxying.locations.map(l => ({ ...l })),
+    // Normalize each location so `cache` is always present (defaults to true
+    // for legacy rows that predate the column).
+    locations: S.sslProxying.locations.map(l => ({
+      host:  l.host || '',
+      port:  l.port || '',
+      cache: l.cache === false ? false : true,
+    })),
   };
   _sslSelectedRow = -1;
   $('sslEnabled').checked = _sslDraft.enabled;
@@ -1493,6 +1531,20 @@ function appendSslRow(idx, loc) {
   row.appendChild(mkInput('host', loc.host, '*'));
   row.appendChild(mkInput('port', loc.port, '443', 'ssl-loc-port'));
 
+  // Cache toggle per host — controls Cached tab visibility + replay-URL access
+  const cacheWrap = document.createElement('label');
+  cacheWrap.className = 'ssl-loc-cache';
+  cacheWrap.title = 'Allow this host\'s JSON responses to appear in the Cached tab and be served at http://<ip>:9000/<host>/<path>';
+  const cacheCb = document.createElement('input');
+  cacheCb.type = 'checkbox';
+  cacheCb.checked = loc.cache !== false;
+  cacheCb.addEventListener('change', () => {
+    _sslDraft.locations[idx].cache = cacheCb.checked;
+  });
+  cacheCb.addEventListener('focus', () => selectSslRow(idx));
+  cacheWrap.appendChild(cacheCb);
+  row.appendChild(cacheWrap);
+
   // Clicking the row background (not an input) still marks it selected
   row.addEventListener('mousedown', e => {
     if (e.target === row) selectSslRow(idx);
@@ -1512,7 +1564,7 @@ function renderSslLocations() {
 function addSslRow() {
   if (!_sslDraft) return;
   const idx = _sslDraft.locations.length;
-  _sslDraft.locations.push({ host: '', port: '' });
+  _sslDraft.locations.push({ host: '', port: '', cache: true });
   selectSslRow(idx);
   const row = appendSslRow(idx, _sslDraft.locations[idx]);
   row.querySelectorAll('.ssl-loc-input')[0].focus();

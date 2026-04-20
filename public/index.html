@@ -220,7 +220,13 @@
          replayable at http://<ip>:<dashboardPort>/<host>/<path>?<query>. -->
     <div id="viewCached" class="hidden">
       <div class="cached-toolbar">
-        <span class="debug-toolbar-label">JSON captures · replay locally</span>
+        <div class="cached-toolbar-left">
+          <span class="debug-toolbar-label">JSON captures · replay locally</span>
+          <button class="cached-config-link" id="cachedConfigLink" title="Open SSL Proxying Settings to toggle caching per domain">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+            Configure in SSL Proxying…
+          </button>
+        </div>
         <span class="cached-base" id="cachedBase">base: <code id="cachedBaseUrl">http://localhost:9000/</code></span>
       </div>
       <div class="domain-tree" id="cachedTree"></div>
@@ -317,6 +323,8 @@
         The same list also filters <strong>plain-HTTP captures</strong>: traffic to
         non-matching hosts is forwarded as usual but hidden from the dashboard, so
         OS background noise (Windows Update, connectivity probes, etc.) doesn't flood the view.
+        The <strong>Cache</strong> column controls whether a host's JSON responses appear
+        in the Cached tab and are replayable at <code>http://&lt;ip&gt;:9000/&lt;host&gt;/&lt;path&gt;</code>.
       </p>
 
       <label class="ssl-enable-row">
@@ -333,6 +341,7 @@
         <div class="ssl-locations-hdr">
           <span class="ssl-loc-col-h">Host</span>
           <span class="ssl-loc-col-h ssl-loc-port-h">Port</span>
+          <span class="ssl-loc-col-h ssl-loc-cache-h" title="Allow JSON responses from this host to appear in the Cached tab and be replayable at http://<ip>:9000/<host>/<path>">Cache</span>
         </div>
         <div class="ssl-locations-list" id="sslLocationsList">
           <!-- rows injected by JS -->
