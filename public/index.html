@@ -34,6 +34,8 @@
   <symbol id="i-filter"    viewBox="0 0 24 24"><path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></symbol>
   <symbol id="i-pencil"    viewBox="0 0 24 24"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
   <symbol id="i-grip"      viewBox="0 0 24 24"><path fill="currentColor" d="M8 6h2v2H8V6zm6 0h2v2h-2V6zM8 11h2v2H8v-2zm6 0h2v2h-2v-2zM8 16h2v2H8v-2zm6 0h2v2h-2v-2z"/></symbol>
+  <symbol id="i-data"      viewBox="0 0 24 24"><path fill="currentColor" d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.58 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm0 2c3.31 0 6 .9 6 2s-2.69 2-6 2-6-.9-6-2 2.69-2 6-2zm-6 4.5c.99.78 2.76 1.5 6 1.5s5.01-.72 6-1.5V12c0 1.1-2.69 2-6 2s-6-.9-6-2V9.5zm0 5C6.99 15.28 8.76 16 12 16s5.01-.72 6-1.5V17c0 1.1-2.69 2-6 2s-6-.9-6-2v-2.5z"/></symbol>
+  <symbol id="i-upload"    viewBox="0 0 24 24"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"/></symbol>
 </svg>
 
 <!-- ─── NAVBAR ──────────────────────────────────────────────────────────────── -->
@@ -119,6 +121,25 @@
       </div>
     </div>
     <div class="sep"></div>
+    <div class="tools-dropdown" id="dataDropdown">
+      <button class="icon-btn tools-btn" id="btnData" title="Backup &amp; restore sessions — take your captures to another machine">
+        <svg width="13" height="13"><use href="#i-data"/></svg>
+        Data
+        <svg width="10" height="10" class="chevron-d"><use href="#i-chevron-d"/></svg>
+      </button>
+      <div class="tools-menu hidden" id="dataMenu">
+        <button class="tools-menu-item" id="menuBackup">
+          <span class="tool-icon-chip chip-blue"><svg width="14" height="14"><use href="#i-download"/></svg></span>
+          <span class="tool-item-label label-blue">Backup sessions…</span>
+        </button>
+        <button class="tools-menu-item" id="menuRestore">
+          <span class="tool-icon-chip chip-purple"><svg width="14" height="14"><use href="#i-upload"/></svg></span>
+          <span class="tool-item-label label-purple">Restore sessions…</span>
+        </button>
+      </div>
+      <input type="file" id="restoreFile" accept="application/json,.json" class="hidden">
+    </div>
+    <div class="sep"></div>
     <button class="icon-btn export-btn" id="btnExport" title="Export visible requests as HAR  [E]">
       <svg width="13" height="13"><use href="#i-download"/></svg>
       Export HAR
@@ -156,6 +177,20 @@
     <button class="clear-btn hidden" id="clearFilter">✕</button>
   </div>
   <span class="req-count" id="reqCount">0 requests</span>
+</div>
+
+<!-- ─── RESTORE BANNER ─────────────────────────────────────────────────────── -->
+<!-- Appears on startup when the server has no captures but IndexedDB does
+     (typically: first page load after a server restart). User opts in. -->
+<div class="restore-banner hidden" id="restoreBanner">
+  <svg width="14" height="14"><use href="#i-data"/></svg>
+  <span class="restore-banner-text">
+    Found <strong id="rbSessions">0</strong> saved session<span id="rbSessionsPlural">s</span>
+    (<strong id="rbCaptures">0</strong> captures) in this browser.
+    Restore them to the server?
+  </span>
+  <button class="restore-banner-btn rb-primary" id="rbRestoreBtn">Restore</button>
+  <button class="restore-banner-btn rb-dismiss" id="rbDismissBtn">Dismiss</button>
 </div>
 
 <!-- ─── MAIN ───────────────────────────────────────────────────────────────── -->

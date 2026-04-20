@@ -1243,6 +1243,33 @@ function createDashboard() {
     }
 
     {
+      const patchMatch = req.url.match(/^\/api\/sessions\/([^/]+)$/);
+      if (patchMatch && req.method === 'PATCH') {
+        const id = patchMatch[1];
+        const s = sessions.get(id);
+        if (!s) { res.writeHead(404, cors); res.end(); return; }
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+          try {
+            const update = JSON.parse(body || '{}');
+            if (typeof update.name === 'string') {
+              const trimmed = update.name.trim();
+              if (trimmed) s.name = trimmed;
+            }
+            const payload = sessionsPayload();
+            broadcast({ type: 'session_list', data: payload });
+            res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(payload));
+          } catch {
+            res.writeHead(400); res.end('Bad Request');
+          }
+        });
+        return;
+      }
+    }
+
+    {
       const delMatch = req.url.match(/^\/api\/sessions\/([^/]+)$/);
       if (delMatch && req.method === 'DELETE') {
         const id = delMatch[1];
@@ -1264,6 +1291,101 @@ function createDashboard() {
         res.end(JSON.stringify(payload));
         return;
       }
+    }
+
+    // Bulk restore — wipes current sessions + reloads from a backup JSON.
+    // Also accepts optional sslProxying / mapLocal / mapRemote config blocks
+    // (they are part of a "developer setup" backup). Destructive by design;
+    // the dashboard shows a confirm dialog before POSTing here.
+    if (req.url === '/api/sessions/restore' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          if (!Array.isArray(payload.sessions) || !payload.sessions.length) {
+            res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Payload must contain a non-empty sessions[] array.' }));
+            return;
+          }
+
+          // Replace sessions wholesale
+          sessions.clear();
+          for (const s of payload.sessions) {
+            const session = {
+              id:        s.id || crypto.randomUUID(),
+              name:      s.name || `Session ${sessions.size + 1}`,
+              createdAt: s.createdAt || new Date().toISOString(),
+              captures:  Array.isArray(s.captures) ? s.captures : [],
+              // Binary-body buffers are intentionally NOT part of the backup
+              // contract (see README / Data menu copy). Start empty.
+              captureBuffers: new Map(),
+            };
+            sessions.set(session.id, session);
+          }
+          // Reset stats — they're session-scoped and the old ones referenced
+          // rule IDs that may no longer exist after config restore.
+          mapRemoteStats.clear();
+
+          const wantActive = payload.activeId && sessions.has(payload.activeId)
+            ? payload.activeId
+            : [...sessions.keys()][0];
+          setActiveSession(wantActive);
+
+          // Optional: config blocks. Each goes through the same normalization
+          // path as its dedicated POST endpoint, so legacy payloads still work.
+          if (payload.sslProxying && typeof payload.sslProxying === 'object') {
+            if (typeof payload.sslProxying.enabled === 'boolean') sslProxying.enabled = payload.sslProxying.enabled;
+            if (Array.isArray(payload.sslProxying.locations)) {
+              sslProxying.locations = payload.sslProxying.locations.map(l => ({
+                host:  (l && typeof l.host === 'string') ? l.host : '',
+                port:  (l && typeof l.port === 'string') ? l.port : '',
+                cache: (l && l.cache === false) ? false : true,
+              }));
+            }
+            broadcast({ type: 'ssl_proxying', data: sslProxying });
+          }
+          if (payload.mapLocal && typeof payload.mapLocal === 'object') {
+            if (typeof payload.mapLocal.enabled === 'boolean') mapLocal.enabled = payload.mapLocal.enabled;
+            if (Array.isArray(payload.mapLocal.mappings))       mapLocal.mappings = payload.mapLocal.mappings;
+            broadcast({ type: 'map_local', data: mapLocal });
+          }
+          if (payload.mapRemote && typeof payload.mapRemote === 'object') {
+            if (typeof payload.mapRemote.enabled === 'boolean') mapRemote.enabled = payload.mapRemote.enabled;
+            if (Array.isArray(payload.mapRemote.rules)) {
+              const now = new Date().toISOString();
+              mapRemote.rules = payload.mapRemote.rules.map(r => ({
+                id:          r.id || crypto.randomUUID(),
+                name:        r.name || 'Map Remote',
+                description: r.description || '',
+                enabled:     r.enabled !== false,
+                conditions:  Array.isArray(r.conditions) ? r.conditions : [],
+                redirect:    r.redirect || { type: 'URL', target: '', preservePath: true, preserveQuery: true, preserveMethod: true, preserveHeaders: true, preserveBody: true },
+                createdAt:   r.createdAt || now,
+                updatedAt:   now,
+              }));
+            }
+            broadcast({ type: 'map_remote', data: mapRemotePayload() });
+          }
+
+          const sp = sessionsPayload();
+          broadcast({ type: 'session_list', data: sp });
+          broadcast({ type: 'session_activated', data: { ...sp, captures: captures.slice(0, 300) } });
+
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            restored: {
+              sessions: sp.sessions.length,
+              captures: [...sessions.values()].reduce((n, s) => n + s.captures.length, 0),
+              activeId: sp.activeId,
+            },
+          }));
+        } catch (e) {
+          res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Restore failed: ' + e.message }));
+        }
+      });
+      return;
     }
 
     if (req.url === '/api/map-remote' && req.method === 'GET') {

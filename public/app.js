@@ -18,7 +18,7 @@ const S = {
   proxyPort:   9999,
   connected:   false,
   domainOpen:  {},   // hostname → bool
-  sslProxying: { enabled: true, locations: [{ host: '*', port: '' }] },
+  sslProxying: { enabled: true, locations: [{ host: '*', port: '', cache: true }] },
   mapLocal:    { enabled: false, mappings: [] },
   mapRemote:   { enabled: false, rules: [] },
 };
@@ -66,6 +66,12 @@ function handle(msg) {
       applyFilter();
       updateSessionUI();
       renderAll();
+      // Mirror the initial server state to IDB, then check whether the server
+      // is "fresh" (no captures anywhere) while IDB has saved data — that's
+      // when the user gets a restore-prompt banner.
+      syncSessionsToIdb();
+      for (const c of S.captures) idbPutCapture(S.activeSessionId, c);
+      maybeOfferRestore();
       break;
 
     case 'capture':
@@ -73,6 +79,8 @@ function handle(msg) {
       applyFilter();
       updateDebugBadge();
       updateCachedBadge();
+      // Mirror to IDB for local persistence / backup. Fire-and-forget.
+      idbPutCapture(S.activeSessionId, msg.data);
       // Bump the active session's count in the navbar pill (optimistic — the
       // next session_list broadcast will confirm).
       {
@@ -103,6 +111,9 @@ function handle(msg) {
       S.selectedId = null;
       updateDebugBadge();
       updateCachedBadge();
+      // Drop the active session's captures from IDB too, otherwise a Clear
+      // would silently leave orphaned entries sitting around.
+      idbClearSessionCaptures(S.activeSessionId);
       {
         const active = S.sessions.find(s => s.id === S.activeSessionId);
         if (active) { active.count = 0; updateSessionUI(); }
@@ -117,16 +128,19 @@ function handle(msg) {
       // refresh both when the SSL Proxying settings change.
       updateCachedBadge();
       if (S.view === 'cached') renderCached();
+      syncConfigToIdb();
       break;
 
     case 'map_local':
       S.mapLocal = msg.data;
       updateMlStatusDot();
+      syncConfigToIdb();
       break;
 
     case 'map_remote':
       S.mapRemote = msg.data;
       updateMrStatusDot();
+      syncConfigToIdb();
       if (_mrDraft) {
         // Live refresh list if rules modal is open (stats update etc.)
         _mrDraft.rules = S.mapRemote.rules.map(r => ({ ...r }));
@@ -138,6 +152,9 @@ function handle(msg) {
       S.sessions        = msg.data.sessions || [];
       S.activeSessionId = msg.data.activeId || null;
       updateSessionUI();
+      // Mirror the new session metadata + drop any sessions that were deleted.
+      syncSessionsToIdb();
+      reconcileIdbSessions();
       break;
 
     case 'session_activated':
@@ -151,6 +168,11 @@ function handle(msg) {
       applyFilter();
       updateSessionUI();
       renderAll();
+      syncSessionsToIdb();
+      // Mirror the whole active-session payload into IDB on first switch so
+      // later reload/backup can see captures from before this browser tab
+      // existed.
+      for (const c of S.captures) idbPutCapture(S.activeSessionId, c);
       break;
 
     case 'map_remote_stats': {
@@ -1251,19 +1273,33 @@ function renderSessionList() {
     const mins = Math.max(0, Math.round((Date.now() - created.getTime()) / 60000));
     const ago = mins === 0 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
 
+    // Protect the last session from the delete button (server already rejects,
+    // but hiding the button avoids a broken-looking click).
+    const isLast = S.sessions.length <= 1;
+
     row.innerHTML = `
       <div class="session-item-main">
-        <div class="session-item-name">${esc(s.name)}</div>
+        <div class="session-item-name-row">
+          <span class="session-item-name" data-id="${esc(s.id)}" title="Click the pencil to rename">${esc(s.name)}</span>
+          <button class="session-item-rename" data-id="${esc(s.id)}" title="Rename session">
+            <svg width="11" height="11"><use href="#i-pencil"/></svg>
+          </button>
+        </div>
         <div class="session-item-meta">${s.count} capture${s.count !== 1 ? 's' : ''} · ${ago}</div>
       </div>
       ${s.active
         ? '<span class="session-item-active-dot" title="Active">●</span>'
-        : `<button class="session-item-del" data-id="${esc(s.id)}" title="Delete session">✕</button>`}
+        : (isLast
+            ? ''
+            : `<button class="session-item-del" data-id="${esc(s.id)}" title="Delete session and all its captures">✕</button>`)}
     `;
 
-    // Row click = switch (only if not already active)
+    // Row click = switch (only if not already active, and not targeting one
+    // of the inline action controls).
     row.addEventListener('click', async e => {
-      if (e.target.closest('.session-item-del')) return;
+      if (e.target.closest('.session-item-del'))    return;
+      if (e.target.closest('.session-item-rename')) return;
+      if (e.target.closest('.session-item-name-edit')) return;
       if (s.active) return;
       await switchSession(s.id);
       closeSessionMenu();
@@ -1271,6 +1307,22 @@ function renderSessionList() {
 
     list.appendChild(row);
   }
+
+  // Wire rename buttons — click swaps the name <span> for an inline <input>
+  list.querySelectorAll('.session-item-rename').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      startInlineRename(btn.dataset.id);
+    });
+  });
+
+  // Double-click the name itself as a shortcut
+  list.querySelectorAll('.session-item-name').forEach(nameEl => {
+    nameEl.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      startInlineRename(nameEl.dataset.id);
+    });
+  });
 
   // Wire delete buttons
   list.querySelectorAll('.session-item-del').forEach(btn => {
@@ -1285,6 +1337,65 @@ function renderSessionList() {
   });
 }
 
+// Replace the name span with a text input. Enter / blur = save, Escape = cancel.
+function startInlineRename(sessionId) {
+  const s = S.sessions.find(x => x.id === sessionId);
+  if (!s) return;
+  const row = $('sessionList').querySelector(`.session-item[data-id="${CSS.escape(sessionId)}"]`);
+  if (!row) return;
+  const nameRow  = row.querySelector('.session-item-name-row');
+  const nameEl   = row.querySelector('.session-item-name');
+  const renameBtn = row.querySelector('.session-item-rename');
+  if (!nameRow || !nameEl) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = s.name;
+  input.className = 'session-item-name-edit';
+  input.maxLength = 60;
+
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return; settled = true;
+    const val = input.value.trim();
+    // Swap the input back out regardless of outcome — the popover will fully
+    // re-render on the WS session_list broadcast if the name changed.
+    input.replaceWith(nameEl);
+    if (renameBtn) renameBtn.style.visibility = '';
+    if (!save) return;
+    if (!val || val === s.name) return;
+    await renameSession(sessionId, val);
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  // Swallow clicks on the input itself so the row's click-to-switch doesn't
+  // fire while the user is editing.
+  input.addEventListener('click', e => e.stopPropagation());
+
+  nameEl.replaceWith(input);
+  if (renameBtn) renameBtn.style.visibility = 'hidden';
+  input.focus();
+  input.select();
+}
+
+async function renameSession(id, name) {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    // WS session_list broadcast will refresh the popover + navbar.
+  } catch (err) {
+    toast('Rename failed: ' + (err.message || err), 'error');
+  }
+}
+
 async function switchSession(id) {
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
@@ -1296,6 +1407,10 @@ async function switchSession(id) {
 }
 
 async function createNewSession() {
+  // Create immediately with the server's default name — no blocking dialog.
+  // (window.prompt is disabled in Electron's renderer, which is what broke
+  // this button previously.) Rename is available via the pencil icon on the
+  // newly-created row right after it appears.
   try {
     const res = await fetch('/api/sessions', {
       method: 'POST',
@@ -1303,9 +1418,19 @@ async function createNewSession() {
       body: '{}',
     });
     if (!res.ok) throw new Error(await res.text());
-    toast('New session created', 'success');
+    const data = await res.json().catch(() => null);
+    toast('New session created — click the pencil to rename', 'success');
     closeSessionMenu();
-    // WS session_activated will handle the refresh.
+    // WS session_activated broadcast refreshes the UI. If the user wants to
+    // rename right away, they can reopen the dropdown and click the pencil.
+    if (data && data.activeId) {
+      // Small delay so the session_list broadcast has time to land and the
+      // popover is ready when we reopen it.
+      setTimeout(() => {
+        openSessionMenu();
+        setTimeout(() => startInlineRename(data.activeId), 50);
+      }, 100);
+    }
   } catch (err) {
     toast('Failed to create session: ' + (err.message || err), 'error');
   }
@@ -1353,6 +1478,396 @@ function initSessionDropdown() {
       updateSessionUI();
     })
     .catch(() => {});
+}
+
+// ─── IndexedDB persistence ────────────────────────────────────────────────────
+// Mirrors server-side sessions + captures into the browser so they survive a
+// server restart or page reload, and so Backup/Restore can hand a portable
+// JSON file between machines.
+//
+// Stores:
+//   sessions  keyPath=id          { id, name, createdAt, updatedAt }
+//   captures  keyPath=id          { id, sessionId, ...fullCaptureObject }
+//             index bySession=sessionId
+//   meta      keyPath=key         { key, value }  — config blob, schema version, etc.
+const IDB_NAME    = 'localapiwebproxy';
+const IDB_VERSION = 1;
+let _idbPromise = null;
+
+function idbOpen() {
+  if (_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB not available in this environment'));
+      return;
+    }
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('sessions')) {
+        db.createObjectStore('sessions', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('captures')) {
+        const s = db.createObjectStore('captures', { keyPath: 'id' });
+        s.createIndex('bySession', 'sessionId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+  return _idbPromise;
+}
+
+async function idbTx(stores, mode) {
+  const db = await idbOpen();
+  return db.transaction(stores, mode);
+}
+
+function idbWait(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+async function idbPutSession(s) {
+  try {
+    const tx = await idbTx(['sessions'], 'readwrite');
+    tx.objectStore('sessions').put({
+      id:        s.id,
+      name:      s.name,
+      createdAt: s.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch {} // silent — IDB failures shouldn't break the UI
+}
+
+async function idbDeleteSession(sessionId) {
+  try {
+    const tx = await idbTx(['sessions', 'captures'], 'readwrite');
+    tx.objectStore('sessions').delete(sessionId);
+    await idbDeleteCapturesForSession(tx, sessionId);
+  } catch {}
+}
+
+async function idbDeleteCapturesForSession(tx, sessionId) {
+  const idx = tx.objectStore('captures').index('bySession');
+  return new Promise((resolve, reject) => {
+    const req = idx.openKeyCursor(IDBKeyRange.only(sessionId));
+    req.onsuccess = () => {
+      const c = req.result;
+      if (!c) { resolve(); return; }
+      tx.objectStore('captures').delete(c.primaryKey);
+      c.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbPutCapture(sessionId, capture) {
+  if (!capture || !capture.id) return;
+  try {
+    const tx = await idbTx(['captures'], 'readwrite');
+    // Skip binary-body Blob references (resBodyBin captures have resBody:null
+    // anyway; the binary bytes live in a server-side Map and aren't part of
+    // the backup contract).
+    tx.objectStore('captures').put({ ...capture, sessionId });
+  } catch {}
+}
+
+async function idbClearSessionCaptures(sessionId) {
+  try {
+    const tx = await idbTx(['captures'], 'readwrite');
+    await idbDeleteCapturesForSession(tx, sessionId);
+  } catch {}
+}
+
+async function idbAllSessions() {
+  try {
+    const tx = await idbTx(['sessions'], 'readonly');
+    return await idbWait(tx.objectStore('sessions').getAll()) || [];
+  } catch { return []; }
+}
+
+async function idbCapturesForSession(sessionId) {
+  try {
+    const tx = await idbTx(['captures'], 'readonly');
+    const idx = tx.objectStore('captures').index('bySession');
+    return await idbWait(idx.getAll(IDBKeyRange.only(sessionId))) || [];
+  } catch { return []; }
+}
+
+async function idbCaptureCount() {
+  try {
+    const tx = await idbTx(['captures'], 'readonly');
+    return await idbWait(tx.objectStore('captures').count()) || 0;
+  } catch { return 0; }
+}
+
+async function idbClearAll() {
+  try {
+    const tx = await idbTx(['sessions', 'captures', 'meta'], 'readwrite');
+    tx.objectStore('sessions').clear();
+    tx.objectStore('captures').clear();
+    tx.objectStore('meta').clear();
+  } catch {}
+}
+
+async function idbPutMeta(key, value) {
+  try {
+    const tx = await idbTx(['meta'], 'readwrite');
+    tx.objectStore('meta').put({ key, value });
+  } catch {}
+}
+
+async function idbGetMeta(key) {
+  try {
+    const tx = await idbTx(['meta'], 'readonly');
+    const row = await idbWait(tx.objectStore('meta').get(key));
+    return row ? row.value : null;
+  } catch { return null; }
+}
+
+// ─── Sync helpers: server → IDB ──────────────────────────────────────────────
+function syncSessionsToIdb() {
+  for (const s of S.sessions) idbPutSession(s);
+}
+
+function syncConfigToIdb() {
+  idbPutMeta('config', {
+    sslProxying: S.sslProxying,
+    mapLocal:    S.mapLocal,
+    mapRemote:   S.mapRemote,
+  });
+}
+
+// When the server broadcasts a new session list, prune any IDB sessions that
+// the server no longer knows about — unless the user explicitly asked us to
+// preserve them (future: keep-archive feature). For v1: server is truth.
+async function reconcileIdbSessions() {
+  const liveIds = new Set(S.sessions.map(s => s.id));
+  const idbSessions = await idbAllSessions();
+  for (const s of idbSessions) {
+    if (!liveIds.has(s.id)) idbDeleteSession(s.id);
+  }
+}
+
+// ─── Backup / Restore / Data dropdown ────────────────────────────────────────
+const BACKUP_SCHEMA_VERSION = 1;
+
+async function doBackup() {
+  try {
+    const sessions = await idbAllSessions();
+    const payloadSessions = [];
+    let totalCaptures = 0;
+    for (const s of sessions) {
+      const caps = await idbCapturesForSession(s.id);
+      totalCaptures += caps.length;
+      payloadSessions.push({
+        id:        s.id,
+        name:      s.name,
+        createdAt: s.createdAt,
+        // Strip sessionId indexing key — it's implicit by grouping.
+        captures:  caps.map(c => { const { sessionId, ...rest } = c; return rest; }),
+      });
+    }
+    const config = await idbGetMeta('config');
+
+    const backup = {
+      app:    'LocalAPIWebProxy',
+      schema: BACKUP_SCHEMA_VERSION,
+      createdAt: new Date().toISOString(),
+      source:    location.hostname || 'unknown',
+      activeId:  S.activeSessionId,
+      sessions:  payloadSessions,
+      sslProxying: config && config.sslProxying,
+      mapLocal:    config && config.mapLocal,
+      mapRemote:   config && config.mapRemote,
+    };
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    const ts   = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    const host = (location.hostname || 'local').replace(/[^a-z0-9.-]/gi, '_');
+    a.download = `localapiwebproxy-backup-${ts}-${host}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    const sN = payloadSessions.length;
+    toast(`Backed up ${sN} session${sN !== 1 ? 's' : ''} · ${totalCaptures} captures`, 'success');
+  } catch (err) {
+    toast('Backup failed: ' + (err.message || err), 'error');
+  }
+}
+
+async function doRestoreFromFile(file) {
+  if (!file) return;
+  let data;
+  try {
+    const text = await file.text();
+    data = JSON.parse(text);
+  } catch {
+    toast('Invalid backup file: not valid JSON', 'error');
+    return;
+  }
+
+  if (!data || !Array.isArray(data.sessions) || !data.sessions.length) {
+    toast('Invalid backup file: missing sessions[] array', 'error');
+    return;
+  }
+
+  const totalCaps = data.sessions.reduce((n, s) => n + (Array.isArray(s.captures) ? s.captures.length : 0), 0);
+  const sN = data.sessions.length;
+  const configLine = (data.sslProxying || data.mapLocal || data.mapRemote)
+    ? '\n\nConfig settings (SSL Proxying / Map Local / Map Remote) will also be restored.'
+    : '';
+  const ok = confirm(
+    `Restore ${sN} session${sN !== 1 ? 's' : ''} with ${totalCaps} capture${totalCaps !== 1 ? 's' : ''}?\n\n` +
+    `This REPLACES all existing sessions and captures on this machine.${configLine}`
+  );
+  if (!ok) return;
+
+  try {
+    // Wipe + repopulate IDB first so browser state survives even if the
+    // server POST fails (user can retry).
+    await idbClearAll();
+    for (const s of data.sessions) {
+      await idbPutSession(s);
+      for (const c of (s.captures || [])) await idbPutCapture(s.id, c);
+    }
+    if (data.sslProxying || data.mapLocal || data.mapRemote) {
+      await idbPutMeta('config', {
+        sslProxying: data.sslProxying,
+        mapLocal:    data.mapLocal,
+        mapRemote:   data.mapRemote,
+      });
+    }
+
+    // Push to server — WS will broadcast session_activated which repopulates
+    // the UI. No manual re-render needed here.
+    const res = await fetch('/api/sessions/restore', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + res.status));
+    }
+    toast(`Restored ${sN} session${sN !== 1 ? 's' : ''} · ${totalCaps} captures`, 'success');
+  } catch (err) {
+    toast('Restore failed: ' + (err.message || err) + ' (browser data is kept — try again)', 'error');
+  }
+}
+
+function initDataDropdown() {
+  const btn  = $('btnData');
+  const menu = $('dataMenu');
+  if (!btn || !menu) return;
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !menu.classList.contains('hidden');
+    if (open) { menu.classList.add('hidden'); btn.classList.remove('active'); }
+    else      { menu.classList.remove('hidden'); btn.classList.add('active'); }
+  });
+
+  // Close on outside click — same pattern as the Tools menu.
+  document.addEventListener('click', () => {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+  });
+
+  $('menuBackup').addEventListener('click', () => {
+    menu.classList.add('hidden'); btn.classList.remove('active');
+    doBackup();
+  });
+  $('menuRestore').addEventListener('click', () => {
+    menu.classList.add('hidden'); btn.classList.remove('active');
+    $('restoreFile').click();
+  });
+  $('restoreFile').addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    if (file) doRestoreFromFile(file);
+    e.target.value = ''; // allow picking the same file twice in a row
+  });
+}
+
+// ─── Startup restore banner ──────────────────────────────────────────────────
+// Shows when the server reports no captures (typically after a server restart)
+// but IndexedDB still has saved data from a previous run. User opts in.
+let _restoreOffered = false;
+
+async function maybeOfferRestore() {
+  if (_restoreOffered) return;
+  _restoreOffered = true;
+
+  try {
+    const serverCaptureTotal = (S.sessions || []).reduce((n, s) => n + (s.count || 0), 0);
+    if (serverCaptureTotal > 0) return; // server already has data — no need
+
+    const idbSessions = await idbAllSessions();
+    if (!idbSessions.length) return;
+
+    const idbCapsCount = await idbCaptureCount();
+    if (idbCapsCount === 0) return; // sessions without captures — nothing to offer
+
+    const banner  = $('restoreBanner');
+    if (!banner) return;
+    $('rbSessions').textContent = String(idbSessions.length);
+    $('rbSessionsPlural').textContent = idbSessions.length === 1 ? '' : 's';
+    $('rbCaptures').textContent = String(idbCapsCount);
+    banner.classList.remove('hidden');
+  } catch {}
+}
+
+async function applyIdbRestore() {
+  const banner = $('restoreBanner');
+  try {
+    const idbSessions = await idbAllSessions();
+    const payloadSessions = [];
+    for (const s of idbSessions) {
+      const caps = await idbCapturesForSession(s.id);
+      payloadSessions.push({
+        id:        s.id,
+        name:      s.name,
+        createdAt: s.createdAt,
+        captures:  caps.map(c => { const { sessionId, ...rest } = c; return rest; }),
+      });
+    }
+    const config = await idbGetMeta('config');
+    const body = {
+      sessions:    payloadSessions,
+      activeId:    S.activeSessionId,
+      sslProxying: config && config.sslProxying,
+      mapLocal:    config && config.mapLocal,
+      mapRemote:   config && config.mapRemote,
+    };
+    const res = await fetch('/api/sessions/restore', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    toast('Restored from local storage', 'success');
+    banner && banner.classList.add('hidden');
+  } catch (err) {
+    toast('Restore failed: ' + (err.message || err), 'error');
+  }
+}
+
+function initRestoreBanner() {
+  const restoreBtn = $('rbRestoreBtn');
+  const dismissBtn = $('rbDismissBtn');
+  const banner     = $('restoreBanner');
+  if (!restoreBtn || !dismissBtn || !banner) return;
+  restoreBtn.addEventListener('click', applyIdbRestore);
+  dismissBtn.addEventListener('click', () => banner.classList.add('hidden'));
 }
 
 // ─── Tools Dropdown ───────────────────────────────────────────────────────────
@@ -1487,8 +2002,11 @@ function appendSslRow(idx, loc) {
 
     inp.addEventListener('focus', () => selectSslRow(idx));
 
-    inp.addEventListener('input', () => {
-      _sslDraft.locations[idx][field] = inp.value;
+    inp.addEventListener('input', (e) => {
+      // Guard: if the modal was closed between render and keystroke the draft
+      // is gone. Without this guard TypeErrors would silently break typing.
+      if (!_sslDraft || !_sslDraft.locations[idx]) return;
+      _sslDraft.locations[idx][field] = e.target.value;
     });
 
     inp.addEventListener('keydown', e => {
@@ -1531,15 +2049,18 @@ function appendSslRow(idx, loc) {
   row.appendChild(mkInput('host', loc.host, '*'));
   row.appendChild(mkInput('port', loc.port, '443', 'ssl-loc-port'));
 
-  // Cache toggle per host — controls Cached tab visibility + replay-URL access
-  const cacheWrap = document.createElement('label');
+  // Cache toggle per host — controls Cached tab visibility + replay-URL access.
+  // Using a plain div (not <label>) so click-forwarding from empty cell space
+  // to the checkbox doesn't fight the host/port inputs for focus.
+  const cacheWrap = document.createElement('div');
   cacheWrap.className = 'ssl-loc-cache';
   cacheWrap.title = 'Allow this host\'s JSON responses to appear in the Cached tab and be served at http://<ip>:9000/<host>/<path>';
   const cacheCb = document.createElement('input');
   cacheCb.type = 'checkbox';
   cacheCb.checked = loc.cache !== false;
-  cacheCb.addEventListener('change', () => {
-    _sslDraft.locations[idx].cache = cacheCb.checked;
+  cacheCb.addEventListener('change', (e) => {
+    if (!_sslDraft || !_sslDraft.locations[idx]) return;
+    _sslDraft.locations[idx].cache = e.target.checked;
   });
   cacheCb.addEventListener('focus', () => selectSslRow(idx));
   cacheWrap.appendChild(cacheCb);
@@ -2695,6 +3216,8 @@ function init() {
   initNavActions();
   initSessionDropdown();
   initToolsDropdown();
+  initDataDropdown();
+  initRestoreBanner();
   initSslModal();
   initMlModal();
   initMrModal();

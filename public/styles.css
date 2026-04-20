@@ -2973,6 +2973,43 @@ details[open] > .mr-fieldset-hdr .mr-chevron { transform: rotate(180deg); }
 }
 .cached-config-link svg { flex-shrink: 0; }
 
+/* ─── Restore banner (startup prompt) ─────────────────────────────────── */
+.restore-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  background: linear-gradient(90deg, rgba(139,92,246,0.12), rgba(99,102,241,0.10));
+  border-bottom: 1px solid rgba(139,92,246,0.25);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.restore-banner.hidden { display: none; }
+.restore-banner svg { color: #a78bfa; flex-shrink: 0; }
+.restore-banner-text { flex: 1; color: var(--text-2); }
+.restore-banner-text strong { color: var(--text); font-weight: 600; }
+.restore-banner-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-3);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.restore-banner-btn:hover { background: var(--surface-4); color: var(--text); }
+.restore-banner-btn.rb-primary {
+  background: rgba(139,92,246,0.2);
+  border-color: rgba(139,92,246,0.4);
+  color: #c4b5fd;
+}
+.restore-banner-btn.rb-primary:hover {
+  background: rgba(139,92,246,0.3);
+  color: #fff;
+}
+
 /* ─── Session dropdown ─────────────────────────────────────────────────── */
 
 .session-dropdown {
@@ -3071,6 +3108,12 @@ details[open] > .mr-fieldset-hdr .mr-chevron { transform: rotate(180deg); }
   cursor: default;
 }
 .session-item-main { flex: 1; min-width: 0; }
+.session-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
 .session-item-name {
   font-size: 13px;
   font-weight: 500;
@@ -3078,7 +3121,49 @@ details[open] > .mr-fieldset-hdr .mr-chevron { transform: rotate(180deg); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
+/* Inline rename input — takes the space where the name span was */
+.session-item-name-edit {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  outline: none;
+  font-family: inherit;
+}
+.session-item-name-edit:focus {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.session-item-rename {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: all var(--transition);
+}
+.session-item:hover .session-item-rename { opacity: 1; }
+.session-item-rename:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
 .session-item-meta {
   font-size: 11px;
   color: var(--text-3);
@@ -3099,11 +3184,12 @@ details[open] > .mr-fieldset-hdr .mr-chevron { transform: rotate(180deg); }
   font-weight: 600;
   color: var(--text-3);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-2);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.7;
   transition: all var(--transition);
+  flex-shrink: 0;
 }
 .session-item:hover .session-item-del { opacity: 1; }
 .session-item-del:hover {
