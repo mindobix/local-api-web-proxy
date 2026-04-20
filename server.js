@@ -16,7 +16,7 @@ const forge   = require('node-forge');
 const pki     = forge.pki;
 
 // ─── CLI Argument Parser ──────────────────────────────────────────────────────
-// Usage: node server.js [--proxy-port 8888] [--dashboard-port 8000]
+// Usage: node server.js [--proxy-port 9999] [--dashboard-port 9000]
 // Also reads env vars:  PROXY_PORT, DASH_PORT
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -29,8 +29,8 @@ function parseArgs() {
 Usage: node server.js [options]
 
 Options:
-  --proxy-port,     -p <port>   HTTP/HTTPS proxy port  (default: 8888)
-  --dashboard-port, -d <port>   Web dashboard port     (default: 8000)
+  --proxy-port,     -p <port>   HTTP/HTTPS proxy port  (default: 9999)
+  --dashboard-port, -d <port>   Web dashboard port     (default: 9000)
   --help,           -h          Show this help
 
 Environment variables (override defaults, overridden by flags):
@@ -39,8 +39,8 @@ Environment variables (override defaults, overridden by flags):
 
 Examples:
   node server.js
-  node server.js --proxy-port 9999 --dashboard-port 9000
-  node server.js -p 9999 -d 9000
+  node server.js --proxy-port 8888 --dashboard-port 8000
+  node server.js -p 8888 -d 8000
 `);
       process.exit(0);
     }
@@ -51,11 +51,13 @@ Examples:
 const { proxyPort: _pp, dashPort: _dp } = parseArgs();
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const PROXY_PORT     = _pp || parseInt(process.env.PROXY_PORT) || 8888;
-const DASHBOARD_PORT = _dp || parseInt(process.env.DASH_PORT)  || 8000;
+const PROXY_PORT     = _pp || parseInt(process.env.PROXY_PORT) || 9999;
+const DASHBOARD_PORT = _dp || parseInt(process.env.DASH_PORT)  || 9000;
 const MAX_CAPTURES   = 2000;
 const MAX_BODY_BYTES = 256 * 1024; // 256 KB
-const CERTS_DIR      = path.join(__dirname, 'certs');
+// When packaged inside Electron, __dirname may be inside an ASAR archive (read-only).
+// The Electron main process sets CERTS_DIR env var to a writable userData path.
+const CERTS_DIR      = process.env.CERTS_DIR || path.join(__dirname, 'certs');
 const CA_KEY_PATH    = path.join(CERTS_DIR, 'ca.key');
 const CA_CERT_PATH   = path.join(CERTS_DIR, 'ca.crt');
 const LEAF_KEY_PATH  = path.join(CERTS_DIR, 'leaf.key');
@@ -65,8 +67,64 @@ let recording = true;
 let sslProxying = { enabled: true, locations: [{ host: '*', port: '' }] };
 let mapLocal    = { enabled: false, mappings: [] };
 // Each mapping: { enabled, protocol, host, port, path, query, localPath, caseSensitive }
-const captures       = []; // newest first
-const captureBuffers = new Map(); // id → { buf, contentType } for binary responses
+let mapRemote   = { enabled: false, rules: [] };
+// Each rule: { id, name, description, enabled, conditions[], redirect, createdAt, updatedAt }
+// Runtime-only counters for each rule (not persisted / not sent back on POST).
+// ruleId → { count: number, lastMatchedAt: number|null }
+const mapRemoteStats = new Map();
+
+// ─── Sessions ─────────────────────────────────────────────────────────────────
+// Each session owns its own capture ring buffer and binary-body map. One
+// session is "active" at a time; recordCapture + /api/captures + the cache
+// replay route all operate on the active session.
+//
+// `captures` and `captureBuffers` are intentionally kept as mutable aliases so
+// every existing call site keeps working — switching the active session just
+// reassigns these to the new session's internal arrays.
+const sessions = new Map(); // id → { id, name, createdAt, captures: [], captureBuffers: Map }
+let activeSessionId = null;
+let captures       = []; // alias for the active session's captures (newest first)
+let captureBuffers = new Map(); // alias for the active session's binary-body map
+
+function createSession(name) {
+  const id = crypto.randomUUID();
+  const session = {
+    id,
+    name: name || `Session ${sessions.size + 1}`,
+    createdAt: new Date().toISOString(),
+    captures: [],
+    captureBuffers: new Map(),
+  };
+  sessions.set(id, session);
+  return session;
+}
+
+function setActiveSession(id) {
+  const s = sessions.get(id);
+  if (!s) return false;
+  activeSessionId = id;
+  captures       = s.captures;
+  captureBuffers = s.captureBuffers;
+  return true;
+}
+
+function sessionsPayload() {
+  return {
+    activeId: activeSessionId,
+    sessions: [...sessions.values()].map(s => ({
+      id:        s.id,
+      name:      s.name,
+      createdAt: s.createdAt,
+      count:     s.captures.length,
+      active:    s.id === activeSessionId,
+    })),
+  };
+}
+
+// Seed the default session on module load so the aliases above are live before
+// any request is served.
+setActiveSession(createSession('Session 1').id);
+
 const emitter        = new EventEmitter();
 const certCache      = {}; // hostname → { key, cert }
 let CA               = null;
@@ -99,6 +157,44 @@ function sslProxyingAllows(hostname, port) {
     const pMatch = !loc.port || loc.port === '*' || loc.port === String(port);
     return hMatch && pMatch;
   });
+}
+
+// ─── Capture Filter ───────────────────────────────────────────────────────────
+// When SSL Proxying is enabled and restricted to a specific host list, apply
+// the same allowlist to *plain-HTTP* captures too — otherwise OS background
+// noise (Windows Update cert-list downloads, connectivity checks, NTP probes,
+// etc.) floods the dashboard even when the user has scoped the filter to a
+// single domain.
+//
+// Semantics:
+//   - sslProxying.enabled === false      → no filtering (capture everything)
+//   - sslProxying.enabled === true       → forward to sslProxyingAllows()
+//     (which is "*"-aware: a wildcard entry still matches all hosts)
+//
+// Non-matched HTTP traffic is still forwarded — we only skip recordCapture()
+// so Windows Update / connectivity probes keep working silently.
+function shouldCaptureHost(hostname, port) {
+  if (!sslProxying.enabled) return true;
+  return sslProxyingAllows(hostname, port);
+}
+
+// ─── JSON Cache Lookup ────────────────────────────────────────────────────────
+// Powers the /<host>/<path> replay route. Walks the in-memory capture ring
+// (newest-first) and returns the most recent successful GET capture whose
+// content-type declares JSON and that matches the requested host + path+query
+// exactly. Returns null if nothing matches.
+function findCachedResponse(host, pathAndQuery) {
+  for (const c of captures) {
+    if (c.host !== host) continue;
+    if (c.method !== 'GET') continue;
+    if (c.path !== pathAndQuery) continue;
+    if (!c.resBody) continue;
+    if (!c.status || c.status >= 400) continue;
+    const ct = (c.contentType || '').toLowerCase();
+    if (!ct.includes('json')) continue;
+    return c;
+  }
+  return null;
 }
 
 // ─── Map Local Matching ───────────────────────────────────────────────────────
@@ -219,6 +315,330 @@ function serveMapLocal(mapping, req, res, captureInfo) {
         resHeaders,
         resBuf: data,
         mapLocal: true,
+      });
+    }
+  });
+}
+
+// ─── Map Remote ───────────────────────────────────────────────────────────────
+// Evaluate a single condition against a request context.
+// ctx = { url, host, path, method, query, headers }
+function evaluateCondition(cond, ctx) {
+  const field = cond.field;
+  const op    = cond.operator;
+  const cs    = !!cond.caseSensitive;
+  let haystack;
+
+  switch (field) {
+    case 'URL':    haystack = ctx.url;    break;
+    case 'HOST':   haystack = ctx.host;   break;
+    case 'PATH':   haystack = ctx.path;   break;
+    case 'METHOD': haystack = ctx.method; break;
+    case 'QUERY':  haystack = ctx.query;  break;
+    case 'HEADER': {
+      const name = (cond.headerName || '').toLowerCase();
+      if (!name) return false;
+      const v = ctx.headers[name];
+      haystack = Array.isArray(v) ? v.join(', ') : (v || '');
+      break;
+    }
+    default: return false;
+  }
+
+  const needle = cond.value != null ? String(cond.value) : '';
+  const a = cs ? String(haystack || '') : String(haystack || '').toLowerCase();
+  const b = cs ? needle                  : needle.toLowerCase();
+
+  switch (op) {
+    case 'CONTAINS':      return a.includes(b);
+    case 'EQUALS':        return a === b;
+    case 'STARTS_WITH':   return a.startsWith(b);
+    case 'ENDS_WITH':     return a.endsWith(b);
+    case 'MATCHES_REGEX': {
+      try { return new RegExp(needle, cs ? '' : 'i').test(String(haystack || '')); }
+      catch { return false; }
+    }
+    default: return false;
+  }
+}
+
+function buildRequestContext(proto, hostname, port, urlPath, method, headers) {
+  const pathAndQuery = urlPath || '/';
+  const [pathPart, queryPart = ''] = pathAndQuery.split('?');
+  const hostWithPort = (proto === 'https' && port === 443) || (proto === 'http' && port === 80)
+    ? hostname
+    : `${hostname}:${port}`;
+  return {
+    url:    `${proto}://${hostWithPort}${pathAndQuery}`,
+    host:   hostname,
+    path:   pathPart,
+    method: method || 'GET',
+    query:  queryPart,
+    headers: Object.fromEntries(Object.entries(headers || {}).map(([k, v]) => [k.toLowerCase(), v])),
+  };
+}
+
+function findMapRemoteMatch(proto, hostname, port, urlPath, method, headers) {
+  if (!mapRemote.enabled || !mapRemote.rules.length) return null;
+  const ctx = buildRequestContext(proto, hostname, port, urlPath, method, headers);
+
+  for (const rule of mapRemote.rules) {
+    if (!rule.enabled) continue;
+    if (!Array.isArray(rule.conditions) || !rule.conditions.length) continue;
+    if (!rule.redirect || !rule.redirect.type) continue;
+
+    const allMatch = rule.conditions.every(c => evaluateCondition(c, ctx));
+    if (allMatch) return { rule, ctx };
+  }
+  return null;
+}
+
+// URL composition for redirect.type === 'URL'.
+// Documented behavior:
+//   - preservePath=true: append original path to target's path (dedupe slash at boundary).
+//   - preservePath=false: keep only target's path (or '/').
+//   - preserveQuery=true: if target has its own query, merge — target params win on key conflict.
+//   - preserveQuery=false: use only target's query (if any).
+function composeRedirectUrl(originalUrl, target) {
+  const orig = new URL(originalUrl);
+  const tgt  = new URL(target.target);
+
+  // Path
+  let finalPath;
+  if (target.preservePath) {
+    const base = tgt.pathname.replace(/\/+$/, '');    // trim trailing /
+    const orig_ = orig.pathname.startsWith('/') ? orig.pathname : '/' + orig.pathname;
+    finalPath = (base + orig_) || '/';
+  } else {
+    finalPath = tgt.pathname || '/';
+  }
+
+  // Query
+  const params = new URLSearchParams();
+  if (target.preserveQuery) {
+    for (const [k, v] of orig.searchParams) params.append(k, v);
+  }
+  // Target params ALWAYS apply (and override on conflict when preserving query)
+  for (const [k, v] of tgt.searchParams) {
+    params.delete(k);
+    params.append(k, v);
+  }
+  const queryStr = params.toString();
+
+  return {
+    protocol: tgt.protocol.replace(':', ''),  // 'http' | 'https'
+    hostname: tgt.hostname,
+    port:     tgt.port ? parseInt(tgt.port) : (tgt.protocol === 'https:' ? 443 : 80),
+    path:     finalPath + (queryStr ? '?' + queryStr : ''),
+    fullUrl:  `${tgt.protocol}//${tgt.host}${finalPath}${queryStr ? '?' + queryStr : ''}`,
+  };
+}
+
+// Build the payload sent to clients — includes runtime stats merged onto each rule.
+function mapRemotePayload() {
+  return {
+    enabled: mapRemote.enabled,
+    rules: mapRemote.rules.map(r => {
+      const s = mapRemoteStats.get(r.id) || { count: 0, lastMatchedAt: null };
+      return { ...r, matchCount: s.count, lastMatchedAt: s.lastMatchedAt };
+    }),
+  };
+}
+
+function bumpMapRemoteStats(ruleId) {
+  const cur = mapRemoteStats.get(ruleId) || { count: 0, lastMatchedAt: null };
+  cur.count += 1;
+  cur.lastMatchedAt = Date.now();
+  mapRemoteStats.set(ruleId, cur);
+  if (typeof broadcast === 'function') {
+    broadcast({ type: 'map_remote_stats', data: { ruleId, count: cur.count, lastMatchedAt: cur.lastMatchedAt } });
+  }
+}
+
+// Forward a request to a different URL per a Map Remote URL rule.
+// Called from both HTTP and HTTPS handlers after a match.
+function serveMapRemoteUrl(rule, origReq, origRes, captureInfo) {
+  const target = rule.redirect;
+  const composed = composeRedirectUrl(captureInfo.fullUrl, target);
+
+  // Apply preservation flags
+  const preserveMethod  = target.preserveMethod  !== false;
+  const preserveHeaders = target.preserveHeaders !== false;
+  const preserveBody    = target.preserveBody    !== false;
+
+  const method = preserveMethod ? origReq.method : 'GET';
+
+  // Headers — start from original if preserving, else minimal
+  const fwdHeaders = preserveHeaders ? { ...origReq.headers } : {};
+  delete fwdHeaders['proxy-connection'];
+  delete fwdHeaders['proxy-authorization'];
+  // Rewrite Host to the new target
+  fwdHeaders['host'] = composed.port === 80 || composed.port === 443
+    ? composed.hostname
+    : `${composed.hostname}:${composed.port}`;
+
+  if (!preserveBody || !preserveMethod) {
+    // Drop body-related headers when not sending a body
+    delete fwdHeaders['content-length'];
+    delete fwdHeaders['transfer-encoding'];
+    delete fwdHeaders['content-type'];
+  }
+
+  const transport = composed.protocol === 'https' ? https : http;
+  const reqChunks = [];
+
+  const proxyReq = transport.request({
+    hostname: composed.hostname,
+    port:     composed.port,
+    path:     composed.path,
+    method,
+    headers:  fwdHeaders,
+    rejectUnauthorized: false,
+    servername: composed.protocol === 'https' ? composed.hostname : undefined, // SNI
+  }, async proxyRes => {
+    const resChunks = [];
+    const rawEncoding = proxyRes.headers['content-encoding'] || '';
+    const fwdResHeaders = { ...proxyRes.headers };
+    delete fwdResHeaders['content-encoding'];
+    delete fwdResHeaders['content-length'];
+    delete fwdResHeaders['alt-svc'];
+    fwdResHeaders['x-map-remote-rule']     = rule.name || rule.id;
+    fwdResHeaders['x-map-remote-original'] = captureInfo.fullUrl;
+    fwdResHeaders['x-map-remote-final']    = composed.fullUrl;
+
+    if (!origRes.headersSent) origRes.writeHead(proxyRes.statusCode, fwdResHeaders);
+
+    const decoder = createDecoder(rawEncoding);
+    const source  = decoder ? proxyRes.pipe(decoder) : proxyRes;
+    if (decoder) decoder.on('error', () => origRes.end());
+
+    source.on('data', c => { resChunks.push(c); origRes.write(c); });
+    source.on('end', async () => {
+      origRes.end();
+      bumpMapRemoteStats(rule.id);
+      if (!recording) return;
+      await recordCapture({
+        ...captureInfo,
+        reqBuf:     Buffer.concat(reqChunks),
+        status:     proxyRes.statusCode,
+        statusText: proxyRes.statusMessage,
+        resHeaders: fwdResHeaders,
+        resBuf:     Buffer.concat(resChunks),
+        mapRemote: {
+          ruleId:      rule.id,
+          ruleName:    rule.name || '',
+          originalUrl: captureInfo.fullUrl,
+          finalUrl:    composed.fullUrl,
+          matched:     rule.conditions,
+        },
+      });
+    });
+  });
+
+  proxyReq.on('error', async err => {
+    if (!origRes.headersSent) { origRes.writeHead(502); origRes.end('Map Remote error: ' + err.message); }
+    bumpMapRemoteStats(rule.id);
+    if (!recording) return;
+    await recordCapture({
+      ...captureInfo,
+      reqBuf: Buffer.concat(reqChunks),
+      status: 0, statusText: 'Map Remote Connection Error',
+      resHeaders: {}, resBuf: Buffer.alloc(0),
+      error: err.message,
+      mapRemote: {
+        ruleId:      rule.id,
+        ruleName:    rule.name || '',
+        originalUrl: captureInfo.fullUrl,
+        finalUrl:    composed.fullUrl,
+        matched:     rule.conditions,
+      },
+    });
+  });
+
+  if (preserveBody && preserveMethod) {
+    origReq.on('data', c => { reqChunks.push(c); proxyReq.write(c); });
+    origReq.on('end',  () => proxyReq.end());
+  } else {
+    // Drain the body but don't forward it
+    origReq.on('data', c => reqChunks.push(c));
+    origReq.on('end',  () => proxyReq.end());
+  }
+}
+
+// Serve a local file per a Map Remote LOCAL_FILE rule (thin wrapper over serveMapLocal).
+function serveMapRemoteLocal(rule, origReq, origRes, captureInfo) {
+  const target = rule.redirect;
+  const pseudoMapping = {
+    localPath: target.filePath,
+    // serveMapLocal infers content-type from extension; we override if provided
+  };
+
+  const statusOverride = target.statusCode || 200;
+  const ctOverride     = target.contentType || null;
+
+  fs.readFile(target.filePath, (err, data) => {
+    if (err) {
+      if (!origRes.headersSent) {
+        origRes.writeHead(404, { 'Content-Type': 'text/plain' });
+        origRes.end('Map Remote: file not found — ' + target.filePath);
+      }
+      bumpMapRemoteStats(rule.id);
+      if (recording) {
+        recordCapture({
+          ...captureInfo,
+          status: 404, statusText: 'Map Remote File Not Found',
+          resHeaders: { 'content-type': 'text/plain', 'x-map-remote-file': target.filePath, 'x-map-remote-rule': rule.name || rule.id },
+          resBuf: Buffer.from('Map Remote: file not found — ' + target.filePath),
+          mapRemote: {
+            ruleId:      rule.id,
+            ruleName:    rule.name || '',
+            originalUrl: captureInfo.fullUrl,
+            finalUrl:    'file://' + target.filePath,
+            matched:     rule.conditions,
+          },
+        });
+      }
+      return;
+    }
+
+    const ext = path.extname(target.filePath).toLowerCase();
+    const ctMap = {
+      '.json': 'application/json; charset=utf-8',
+      '.xml':  'application/xml; charset=utf-8',
+      '.html': 'text/html; charset=utf-8',
+      '.txt':  'text/plain; charset=utf-8',
+      '.js':   'application/javascript; charset=utf-8',
+      '.css':  'text/css; charset=utf-8',
+    };
+    const ct = ctOverride || ctMap[ext] || 'application/octet-stream';
+
+    const resHeaders = {
+      'content-type':       ct,
+      'content-length':     String(data.length),
+      'x-map-remote-file':  target.filePath,
+      'x-map-remote-rule':  rule.name || rule.id,
+    };
+
+    if (!origRes.headersSent) {
+      origRes.writeHead(statusOverride, resHeaders);
+      origRes.end(data);
+    }
+
+    bumpMapRemoteStats(rule.id);
+
+    if (recording) {
+      recordCapture({
+        ...captureInfo,
+        status: statusOverride, statusText: 'OK (Map Remote)',
+        resHeaders,
+        resBuf: data,
+        mapRemote: {
+          ruleId:      rule.id,
+          ruleName:    rule.name || '',
+          originalUrl: captureInfo.fullUrl,
+          finalUrl:    'file://' + target.filePath,
+          matched:     rule.conditions,
+        },
       });
     }
   });
@@ -357,7 +777,8 @@ function getCertForHost(hostname) {
 // ─── Shared capture logic ──────────────────────────────────────────────────────
 async function recordCapture({ id, t0, method, fullUrl, host, port, path: urlPath,
                                proto, reqHeaders, reqBuf, status, statusText,
-                               resHeaders, resBuf, error, mapLocal: isMapLocal }) {
+                               resHeaders, resBuf, error, mapLocal: isMapLocal,
+                               mapRemote: mapRemoteInfo }) {
   const encoding = (resHeaders || {})['content-encoding'] || '';
   const decoded  = await decompressBody(resBuf || Buffer.alloc(0), encoding);
   const ct       = ((resHeaders || {})['content-type'] || '').split(';')[0].trim();
@@ -383,6 +804,7 @@ async function recordCapture({ id, t0, method, fullUrl, host, port, path: urlPat
     resSize:  resBuf  ? resBuf.length : 0,
     error: error || null,
     mapLocal: isMapLocal || false,
+    mapRemote: mapRemoteInfo || null,
   };
 
   // Store binary body for on-demand serving (images, etc.)
@@ -411,6 +833,27 @@ const interceptServer = http.createServer((req, res) => {
   const fullUrl = `https://${urlHost}${req.url}`;
 
   const reqChunks = [];
+
+  // ── Map Remote check (HTTPS) — runs before Map Local ──
+  const mrMatch = findMapRemoteMatch('https', hostname, port, req.url, req.method, req.headers);
+  if (mrMatch) {
+    const { rule } = mrMatch;
+    const capInfo = {
+      id, t0, method: req.method, fullUrl,
+      host: hostname, port, path: req.url, proto: 'https',
+      reqHeaders: req.headers,
+    };
+    if (rule.redirect.type === 'URL') {
+      serveMapRemoteUrl(rule, req, res, capInfo);
+    } else if (rule.redirect.type === 'LOCAL_FILE') {
+      req.on('data', c => reqChunks.push(c));
+      req.on('end', () => serveMapRemoteLocal(rule, req, res, { ...capInfo, reqBuf: Buffer.concat(reqChunks) }));
+    } else {
+      // Unknown redirect type — fall through to normal forwarding
+    }
+    if (rule.redirect.type === 'URL' || rule.redirect.type === 'LOCAL_FILE') return;
+  }
+
   req.on('data', c => reqChunks.push(c));
 
   // ── Map Local check (HTTPS) ──
@@ -537,7 +980,7 @@ function handleConnect(req, clientSocket, head) {
   interceptServer.emit('connection', tlsSocket);
 }
 
-// ─── HTTP Proxy Server (port 8888) ────────────────────────────────────────────
+// ─── HTTP Proxy Server (port 9999) ────────────────────────────────────────────
 function createProxy() {
   const server = http.createServer((req, res) => {
     const t0 = Date.now();
@@ -548,6 +991,26 @@ function createProxy() {
     catch { res.writeHead(400); res.end('Bad Request'); return; }
 
     const reqChunks  = [];
+
+    // ── Map Remote check (HTTP) — runs before Map Local ──
+    const mrMatchHttp = findMapRemoteMatch('http', url.hostname, url.port || 80, url.pathname + (url.search || ''), req.method, req.headers);
+    if (mrMatchHttp) {
+      const { rule } = mrMatchHttp;
+      const capInfo = {
+        id, t0, method: req.method, fullUrl: req.url,
+        host: url.hostname, port: url.port || 80,
+        path: url.pathname + (url.search || ''), proto: 'http',
+        reqHeaders: req.headers,
+      };
+      if (rule.redirect.type === 'URL') {
+        serveMapRemoteUrl(rule, req, res, capInfo);
+        return;
+      } else if (rule.redirect.type === 'LOCAL_FILE') {
+        req.on('data', c => reqChunks.push(c));
+        req.on('end', () => serveMapRemoteLocal(rule, req, res, { ...capInfo, reqBuf: Buffer.concat(reqChunks) }));
+        return;
+      }
+    }
 
     // ── Map Local check (HTTP) ──
     const mapLocalMatch = findMapLocalMatch('http', url.hostname, url.port || 80, url.pathname + (url.search || ''));
@@ -593,6 +1056,7 @@ function createProxy() {
       source.on('end', async () => {
         res.end();
         if (!recording) return;
+        if (!shouldCaptureHost(url.hostname, url.port || 80)) return;
         await recordCapture({
           id, t0, method: req.method, fullUrl: req.url,
           host: url.hostname, port: url.port || 80,
@@ -610,6 +1074,7 @@ function createProxy() {
     proxyReq.on('error', async err => {
       if (!res.headersSent) { res.writeHead(502); res.end('Proxy error: ' + err.message); }
       if (!recording) return;
+      if (!shouldCaptureHost(url.hostname, url.port || 80)) return;
       await recordCapture({
         id, t0, method: req.method, fullUrl: req.url,
         host: url.hostname, port: url.port || 80,
@@ -632,7 +1097,7 @@ function createProxy() {
   return server;
 }
 
-// ─── Dashboard Server (port 8000) ─────────────────────────────────────────────
+// ─── Dashboard Server (port 9000) ─────────────────────────────────────────────
 function createDashboard() {
   const server = http.createServer((req, res) => {
     const cors = {
@@ -695,6 +1160,140 @@ function createDashboard() {
           res.end(JSON.stringify(mapLocal));
         } catch {
           res.writeHead(400); res.end('Bad Request');
+        }
+      });
+      return;
+    }
+
+    // ── Sessions ─────────────────────────────────────────────────────────────
+    if (req.url === '/api/sessions' && req.method === 'GET') {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(sessionsPayload()));
+      return;
+    }
+
+    if (req.url === '/api/sessions' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        let name;
+        try { name = (JSON.parse(body || '{}').name || '').trim() || undefined; }
+        catch { name = undefined; }
+        const created = createSession(name);
+        setActiveSession(created.id);
+        const payload = sessionsPayload();
+        broadcast({ type: 'session_list',      data: payload });
+        broadcast({ type: 'session_activated', data: { ...payload, captures: captures.slice(0, 300) } });
+        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      });
+      return;
+    }
+
+    {
+      const activateMatch = req.url.match(/^\/api\/sessions\/([^/]+)\/activate$/);
+      if (activateMatch && req.method === 'POST') {
+        const ok = setActiveSession(activateMatch[1]);
+        if (!ok) { res.writeHead(404, cors); res.end(JSON.stringify({ error: 'Session not found' })); return; }
+        const payload = sessionsPayload();
+        broadcast({ type: 'session_activated', data: { ...payload, captures: captures.slice(0, 300) } });
+        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+    }
+
+    {
+      const delMatch = req.url.match(/^\/api\/sessions\/([^/]+)$/);
+      if (delMatch && req.method === 'DELETE') {
+        const id = delMatch[1];
+        if (id === activeSessionId) {
+          res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot delete the active session. Switch to another first.' }));
+          return;
+        }
+        if (sessions.size <= 1) {
+          res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cannot delete the last remaining session.' }));
+          return;
+        }
+        if (!sessions.has(id)) { res.writeHead(404, cors); res.end(); return; }
+        sessions.delete(id);
+        const payload = sessionsPayload();
+        broadcast({ type: 'session_list', data: payload });
+        res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+    }
+
+    if (req.url === '/api/map-remote' && req.method === 'GET') {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(mapRemotePayload()));
+      return;
+    }
+
+    if (req.url === '/api/map-remote' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const update = JSON.parse(body);
+          if (typeof update.enabled === 'boolean') mapRemote.enabled = update.enabled;
+          if (Array.isArray(update.rules)) {
+            // Normalize rules: ensure id + timestamps + defaults
+            mapRemote.rules = update.rules.map(r => {
+              const now = new Date().toISOString();
+              return {
+                id:           r.id || crypto.randomUUID(),
+                name:         r.name || 'Map Remote',
+                description:  r.description || '',
+                enabled:      r.enabled !== false,
+                conditions:   Array.isArray(r.conditions) ? r.conditions : [],
+                redirect:     r.redirect || { type: 'URL', target: '', preservePath: true, preserveQuery: true, preserveMethod: true, preserveHeaders: true, preserveBody: true },
+                createdAt:    r.createdAt || now,
+                updatedAt:    now,
+              };
+            });
+            // Drop stats for rules that no longer exist
+            const liveIds = new Set(mapRemote.rules.map(r => r.id));
+            for (const k of [...mapRemoteStats.keys()]) {
+              if (!liveIds.has(k)) mapRemoteStats.delete(k);
+            }
+          }
+          const payload = mapRemotePayload();
+          broadcast({ type: 'map_remote', data: payload });
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(payload));
+        } catch {
+          res.writeHead(400); res.end('Bad Request');
+        }
+      });
+      return;
+    }
+
+    // Test a single condition against a sample URL/request (for the "flask" UI panel)
+    if (req.url === '/api/map-remote/test' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          const sampleUrl = payload.url || '';
+          const method    = (payload.method || 'GET').toUpperCase();
+          const headers   = payload.headers || {};
+          const cond      = payload.condition || null;
+          if (!cond) { res.writeHead(400); res.end('Missing condition'); return; }
+          const u = new URL(sampleUrl);
+          const proto = u.protocol.replace(':', '');
+          const port  = u.port ? parseInt(u.port) : (proto === 'https' ? 443 : 80);
+          const ctx = buildRequestContext(proto, u.hostname, port, u.pathname + (u.search || ''), method, headers);
+          const matched = evaluateCondition(cond, ctx);
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ matched, context: ctx }));
+        } catch (e) {
+          res.writeHead(400, { ...cors, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
         }
       });
       return;
@@ -791,6 +1390,44 @@ function createDashboard() {
       return;
     }
 
+    // Cache-replay route: /<host>/<path>?<query>
+    // Serves a previously captured JSON response back at an origin-matching URL,
+    // e.g. http://<ip>:9000/www.kroger.com/all/coupons?couponid=600 replays the
+    // last GET capture for that exact URL. Only engages when the first path
+    // segment contains a dot AND at least one capture has that host — so it
+    // never shadows the dashboard's own static assets (app.js, etc.).
+    {
+      const cm = req.url.match(/^\/([^/?#]+)(\/[^?#]*)?(\?.*)?$/);
+      if (cm && req.method === 'GET') {
+        const host = decodeURIComponent(cm[1]);
+        if (host.includes('.') && captures.some(c => c.host === host)) {
+          const pq = (cm[2] || '/') + (cm[3] || '');
+          const cached = findCachedResponse(host, pq);
+          if (cached) {
+            res.writeHead(200, {
+              ...cors,
+              'Content-Type':      cached.contentType || 'application/json; charset=utf-8',
+              'X-Cached-From':     cached.url,
+              'X-Cached-At':       new Date(cached.ts).toISOString(),
+              'X-Cache-Id':        cached.id,
+              'X-Cache-Truncated': cached.resBodyTrunc ? 'true' : 'false',
+              'Cache-Control':     'no-store',
+            });
+            res.end(cached.resBody || '');
+          } else {
+            res.writeHead(404, { ...cors, 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              error: 'No cached response for that URL',
+              host,
+              path: pq,
+              hint:  'Send this request through the proxy at least once; the JSON response will then be served here.',
+            }, null, 2));
+          }
+          return;
+        }
+      }
+    }
+
     // Static files
     const urlPath  = req.url === '/' ? '/index.html' : req.url.split('?')[0];
     const filePath = path.join(__dirname, 'public', urlPath);
@@ -840,6 +1477,7 @@ wss.on('connection', ws => {
     proxyPort: PROXY_PORT,
     ips:       getLocalIPs(),
     captures:  captures.slice(0, 300),
+    sessions:  sessionsPayload(),
   }));
 
   ws.on('message', raw => {
@@ -889,22 +1527,74 @@ function listenWithRetry(server, port, label, onReady) {
   });
 }
 
-listenWithRetry(proxy, PROXY_PORT, 'Proxy', () => {
-  const ips = getLocalIPs();
-  console.log(`
+// Normal bootstrap — used by both the CLI and the Electron main process.
+function startApp({ proxyPort = PROXY_PORT, dashPort = DASHBOARD_PORT, quiet = false } = {}) {
+  return new Promise((resolve) => {
+    let proxyReady = false, dashReady = false;
+    const maybeResolve = () => {
+      if (proxyReady && dashReady) resolve({ proxy, dashboard, wss, proxyPort, dashPort });
+    };
+
+    listenWithRetry(proxy, proxyPort, 'Proxy', () => {
+      proxyReady = true;
+      if (!quiet) {
+        const ips = getLocalIPs();
+        console.log(`
 ╔═══════════════════════════════════════════════╗
 ║        APIWebProxy  —  Phase 2  (HTTP+HTTPS)   ║
 ╠═══════════════════════════════════════════════╣
-║  Proxy     :  0.0.0.0:${PROXY_PORT}                    ║
-║  Dashboard :  http://localhost:${DASHBOARD_PORT}          ║
-║  CA cert   :  http://localhost:${DASHBOARD_PORT}/ca.crt   ║
+║  Proxy     :  0.0.0.0:${proxyPort}                    ║
+║  Dashboard :  http://localhost:${dashPort}          ║
+║  CA cert   :  http://localhost:${dashPort}/ca.crt   ║
 ╠═══════════════════════════════════════════════╣
-║  1. Set device WiFi proxy → ${(ips[0]||'localhost')+':'+PROXY_PORT}
-║  2. Visit http://localhost:${DASHBOARD_PORT}/ca.crt to install CA
+║  1. Set device WiFi proxy → ${(ips[0]||'localhost')+':'+proxyPort}
+║  2. Visit http://localhost:${dashPort}/ca.crt to install CA
 ╚═══════════════════════════════════════════════╝
 `);
-});
+      }
+      maybeResolve();
+    });
 
-listenWithRetry(dashboard, DASHBOARD_PORT, 'Dashboard', () => {
-  console.log(`Dashboard → http://localhost:${DASHBOARD_PORT}\n`);
-});
+    listenWithRetry(dashboard, dashPort, 'Dashboard', () => {
+      dashReady = true;
+      if (!quiet) console.log(`Dashboard → http://localhost:${dashPort}\n`);
+      maybeResolve();
+    });
+  });
+}
+
+if (require.main === module) {
+  startApp({ proxyPort: PROXY_PORT, dashPort: DASHBOARD_PORT });
+}
+
+// Exported for tests and the Electron main process
+module.exports = {
+  start: startApp,
+  evaluateCondition,
+  buildRequestContext,
+  composeRedirectUrl,
+  findMapRemoteMatch,
+  // mutable state handles for tests
+  _setMapRemote: (next) => {
+    mapRemote.enabled = !!next.enabled;
+    mapRemote.rules   = Array.isArray(next.rules) ? next.rules : [];
+  },
+  _getMapRemote: () => mapRemote,
+  // Start the servers on chosen ports (used by integration test)
+  _startForTest: ({ proxyPort, dashPort } = {}) => {
+    return new Promise((resolve) => {
+      const handles = { proxy, dashboard };
+      let ready = 0;
+      const done = () => { if (++ready === 2) resolve(handles); };
+      proxy.listen(proxyPort || 0, '127.0.0.1', done);
+      dashboard.listen(dashPort || 0, '127.0.0.1', done);
+    });
+  },
+  _stopForTest: () => new Promise(resolve => {
+    let n = 0;
+    const done = () => { if (++n === 2) resolve(); };
+    proxy.close(done);
+    dashboard.close(done);
+    for (const client of wss.clients) { try { client.terminate(); } catch {} }
+  }),
+};

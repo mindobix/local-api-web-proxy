@@ -1,0 +1,45 @@
+appId: com.localapiwebproxy.app
+productName: LocalAPIWebProxy
+
+directories:
+  buildResources: resources
+  output: dist-mac15
+
+asar: false
+
+files:
+  - electron/**/*
+  - server.js
+  - public/**/*
+  - resources/**/*
+  - package.json
+  - node_modules/**/*
+  - "!node_modules/**/*.md"
+  - "!node_modules/**/{test,tests,__tests__,example,examples,docs}/**"
+  - "!test/**"
+  - "!certs/**"
+  - "!dist/**"
+  - "!**/.DS_Store"
+  - "!**/.vscode/**"
+  - "!**/.claude/**"
+
+extraMetadata:
+  main: electron/main.js
+
+# ── macOS 15 universal dmg ─────────────────────────────────────────────────
+# macOS 15 introduced tighter local network privacy. The proxy needs to bind
+# to 0.0.0.0 and accept LAN connections from other devices, which triggers
+# the Local Network permission prompt on first run. Declare the usage string
+# so the OS shows a meaningful explanation.
+mac:
+  target:
+    - target: dmg
+      arch: [universal]
+  notarize: false
+  category: public.app-category.developer-tools
+  icon: resources/icon.png
+  extendInfo:
+    NSLocalNetworkUsageDescription: "LocalAPIWebProxy needs local network access to act as an HTTP/HTTPS proxy for other devices on your WiFi."
+
+dmg:
+  artifactName: ${name}-${version}-mac15-${arch}.${ext}

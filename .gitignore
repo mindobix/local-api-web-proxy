@@ -24,3 +24,9 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Electron build output
+dist/
+dist-mac15/
+out/
+.electron-builder-cache/

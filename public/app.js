@@ -6,16 +6,21 @@ const S = {
   filtered:    [],   // after filter applied
   selectedId:  null,
   filter:      '',
-  view:        'domains',  // 'timeline' | 'domains'
+  view:        'domains',  // 'timeline' | 'domains' | 'debug' | 'cached'
+  debugTool:   'all',      // 'all' | 'mapLocal' | 'mapRemote' — Debug tab chip filter
+  cachedOpen:  {},         // hostname → open/closed state in the Cached tab
+  sessions:    [],         // session summaries from server: { id, name, count, active, createdAt }
+  activeSessionId: null,   // id of the currently active session
   dtab:        'overview', // 'overview' | 'request' | 'response'
   jsonMode:    false,      // toggle between pretty and raw JSON view
   recording:   true,
   ips:         [],
-  proxyPort:   8888,
+  proxyPort:   9999,
   connected:   false,
   domainOpen:  {},   // hostname → bool
   sslProxying: { enabled: true, locations: [{ host: '*', port: '' }] },
   mapLocal:    { enabled: false, mappings: [] },
+  mapRemote:   { enabled: false, rules: [] },
 };
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -54,16 +59,31 @@ function handle(msg) {
       S.ips        = msg.ips || [];
       S.captures   = msg.captures || [];
       S.filtered   = [...S.captures];
+      if (msg.sessions) {
+        S.sessions = msg.sessions.sessions || [];
+        S.activeSessionId = msg.sessions.activeId || null;
+      }
       applyFilter();
+      updateSessionUI();
       renderAll();
       break;
 
     case 'capture':
       S.captures.unshift(msg.data);
       applyFilter();
+      updateDebugBadge();
+      updateCachedBadge();
+      // Bump the active session's count in the navbar pill (optimistic — the
+      // next session_list broadcast will confirm).
+      {
+        const active = S.sessions.find(s => s.id === S.activeSessionId);
+        if (active) { active.count = S.captures.length; updateSessionUI(); }
+      }
       if (S.filter && !S.filtered.find(c => c.id === msg.data.id)) break;
-      if (S.view === 'timeline') prependRow(msg.data);
-      else renderDomainTree();
+      if      (S.view === 'timeline') prependRow(msg.data);
+      else if (S.view === 'debug')    renderDebug();
+      else if (S.view === 'cached')   renderCached();
+      else                            renderDomainTree();
       updateCount();
       setTimeout(() => flashRow(msg.data.id), 10);
       break;
@@ -81,6 +101,12 @@ function handle(msg) {
       S.captures   = [];
       S.filtered   = [];
       S.selectedId = null;
+      updateDebugBadge();
+      updateCachedBadge();
+      {
+        const active = S.sessions.find(s => s.id === S.activeSessionId);
+        if (active) { active.count = 0; updateSessionUI(); }
+      }
       renderAll();
       break;
 
@@ -93,6 +119,52 @@ function handle(msg) {
       S.mapLocal = msg.data;
       updateMlStatusDot();
       break;
+
+    case 'map_remote':
+      S.mapRemote = msg.data;
+      updateMrStatusDot();
+      if (_mrDraft) {
+        // Live refresh list if rules modal is open (stats update etc.)
+        _mrDraft.rules = S.mapRemote.rules.map(r => ({ ...r }));
+        renderMrRules();
+      }
+      break;
+
+    case 'session_list':
+      S.sessions        = msg.data.sessions || [];
+      S.activeSessionId = msg.data.activeId || null;
+      updateSessionUI();
+      break;
+
+    case 'session_activated':
+      // Server is telling every client that the active session changed.
+      // Reset captures to the new session's payload and re-render.
+      S.sessions        = msg.data.sessions || [];
+      S.activeSessionId = msg.data.activeId || null;
+      S.captures        = msg.data.captures || [];
+      S.filtered        = [...S.captures];
+      S.selectedId      = null;
+      applyFilter();
+      updateSessionUI();
+      renderAll();
+      break;
+
+    case 'map_remote_stats': {
+      const rule = S.mapRemote.rules.find(r => r.id === msg.data.ruleId);
+      if (rule) {
+        rule.matchCount    = msg.data.count;
+        rule.lastMatchedAt = msg.data.lastMatchedAt;
+      }
+      if (_mrDraft) {
+        const d = _mrDraft.rules.find(r => r.id === msg.data.ruleId);
+        if (d) {
+          d.matchCount    = msg.data.count;
+          d.lastMatchedAt = msg.data.lastMatchedAt;
+          renderMrRules();
+        }
+      }
+      break;
+    }
   }
 }
 
@@ -130,9 +202,13 @@ function renderAll() {
   updateIPChips();
   updateStatusBar();
   updateCount();
+  updateDebugBadge();
+  updateCachedBadge();
 
-  if (S.view === 'timeline') renderTimeline();
-  else renderDomainTree();
+  if      (S.view === 'timeline') renderTimeline();
+  else if (S.view === 'debug')    renderDebug();
+  else if (S.view === 'cached')   renderCached();
+  else                            renderDomainTree();
 
   if (S.selectedId) {
     const c = S.captures.find(x => x.id === S.selectedId);
@@ -141,6 +217,81 @@ function renderAll() {
   } else {
     showEmptyState();
   }
+}
+
+// ─── Tool-matched helper ──────────────────────────────────────────────────────
+// A capture is "tool-matched" if any Tools-menu feature produced it.
+// Extensible: future tools (Breakpoints, Rewrite, …) set their own flag and
+// this helper picks them up without touching the Debug view rendering.
+function isToolMatched(c) {
+  return !!(c && (c.mapLocal || c.mapRemote));
+}
+
+function toolMatchedCount() {
+  let n = 0;
+  for (const c of S.captures) if (isToolMatched(c)) n++;
+  return n;
+}
+
+function updateDebugBadge() {
+  const pill = $('debugCount');
+  if (!pill) return;
+  const n = toolMatchedCount();
+  if (n === 0) {
+    pill.classList.add('hidden');
+    pill.textContent = '0';
+  } else {
+    pill.classList.remove('hidden');
+    pill.textContent = String(n);
+  }
+}
+
+// ─── Cache helpers ────────────────────────────────────────────────────────────
+// A capture is replayable at /<host>/<path> when it's a successful GET with a
+// JSON content-type and a body we actually kept.
+function isCacheable(c) {
+  if (!c) return false;
+  if ((c.method || '').toUpperCase() !== 'GET') return false;
+  if (!c.status || c.status >= 400) return false;
+  if (!c.resBody) return false;
+  const ct = (c.contentType || '').toLowerCase();
+  return ct.includes('json');
+}
+
+// Deduplicate by host+path — the most recent capture wins since S.captures is
+// newest-first. Returns a flat array.
+function dedupeCacheable(captures) {
+  const seen = new Set();
+  const out  = [];
+  for (const c of captures) {
+    if (!isCacheable(c)) continue;
+    const key = c.host + '|' + c.path;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+function cachedCount() {
+  return dedupeCacheable(S.captures).length;
+}
+
+function updateCachedBadge() {
+  const pill = $('cachedCount');
+  if (!pill) return;
+  const n = cachedCount();
+  if (n === 0) { pill.classList.add('hidden'); pill.textContent = '0'; }
+  else         { pill.classList.remove('hidden'); pill.textContent = String(n); }
+
+  // Keep the "base URL" line in the Cached view in sync with whatever origin
+  // the dashboard happens to be served from (localhost, LAN IP, etc.).
+  const base = $('cachedBaseUrl');
+  if (base) base.textContent = location.origin + '/';
+}
+
+function cacheUrlFor(c) {
+  return location.origin + '/' + c.host + c.path;
 }
 
 // ─── Navbar UI ───────────────────────────────────────────────────────────────
@@ -195,9 +346,108 @@ function renderTimeline() {
   }
 }
 
+// ─── Debug View ───────────────────────────────────────────────────────────────
+function renderDebug() {
+  const list  = $('debugList');
+  const empty = $('debugEmpty');
+  list.innerHTML = '';
+
+  // Filter: tool-matched + (optional) chip narrowing + shared search filter
+  const chip = S.debugTool;
+  const matches = S.filtered.filter(c => {
+    if (!isToolMatched(c)) return false;
+    if (chip === 'mapLocal')  return !!c.mapLocal;
+    if (chip === 'mapRemote') return !!c.mapRemote;
+    return true;
+  });
+
+  if (!matches.length) {
+    empty.classList.remove('hidden');
+    list.classList.add('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  list.classList.remove('hidden');
+
+  for (const c of matches) list.appendChild(makeRow(c));
+}
+
+// ─── Cached View ──────────────────────────────────────────────────────────────
+function renderCached() {
+  const tree  = $('cachedTree');
+  const empty = $('cachedEmpty');
+  tree.innerHTML = '';
+
+  // Respect the shared search filter as well.
+  const items = dedupeCacheable(S.filtered);
+
+  if (!items.length) {
+    empty.classList.remove('hidden');
+    tree.classList.add('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  tree.classList.remove('hidden');
+
+  const groups = {};
+  for (const c of items) {
+    if (!groups[c.host]) groups[c.host] = [];
+    groups[c.host].push(c);
+  }
+
+  for (const [host, list] of Object.entries(groups)) {
+    const isOpen = S.cachedOpen[host] !== false; // default open
+    const grp = document.createElement('div');
+    grp.className = 'domain-group' + (isOpen ? ' open' : '');
+    grp.dataset.host = host;
+
+    grp.innerHTML = `
+      <div class="domain-hdr">
+        <svg class="domain-chevron" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+        <span class="domain-name">${esc(host)}</span>
+        <span class="domain-count">${list.length}</span>
+      </div>
+      <div class="domain-children">
+        ${list.map(c => `
+          <div class="cached-row ${c.id === S.selectedId ? 'active' : ''}" data-id="${c.id}">
+            <span class="dc-method m-${c.method}">${esc(c.method)}</span>
+            <span class="cached-path" title="${esc(c.path)}">${esc(c.path)}</span>
+            <a class="cached-link-btn" href="${esc(cacheUrlFor(c))}" target="_blank" rel="noopener" title="Open cached JSON in new tab">↗</a>
+            <button class="cached-copy-btn" data-url="${esc(cacheUrlFor(c))}" title="Copy cached URL">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    grp.querySelector('.domain-hdr').addEventListener('click', () => {
+      S.cachedOpen[host] = !(S.cachedOpen[host] !== false); // toggle, default-open
+      grp.classList.toggle('open');
+    });
+
+    grp.querySelectorAll('.cached-row').forEach(el => {
+      el.addEventListener('click', e => {
+        if (e.target.closest('.cached-copy-btn') || e.target.closest('.cached-link-btn')) return;
+        selectCapture(el.dataset.id);
+      });
+    });
+
+    grp.querySelectorAll('.cached-copy-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        copyText(btn.dataset.url, btn);
+      });
+    });
+
+    tree.appendChild(grp);
+  }
+}
+
 function makeRow(c) {
   const div = document.createElement('div');
-  div.className = 'req-row' + (c.id === S.selectedId ? ' active' : '') + (c.mapLocal ? ' map-local' : '');
+  div.className = 'req-row' + (c.id === S.selectedId ? ' active' : '')
+    + (c.mapLocal ? ' map-local' : '') + (c.mapRemote ? ' map-remote' : '');
   div.dataset.id = c.id;
 
   const mClass  = 'm-' + (c.method || 'other');
@@ -209,12 +459,15 @@ function makeRow(c) {
   const mlIcon = c.mapLocal
     ? `<span class="ml-badge" title="Map Local">⬤</span>`
     : '';
+  const mrIcon = c.mapRemote
+    ? `<span class="mr-badge" title="Map Remote: ${esc(c.mapRemote.ruleName || '')}">⬤</span>`
+    : '';
 
   div.innerHTML = `
     <span class="m-badge ${mClass}">${esc(c.method || '?')}</span>
     <span><span class="s-badge ${sClass}">${c.status || '—'}</span></span>
     <div class="row-url">
-      <span class="row-host">${lockIcon}${esc(c.host)}${mlIcon}</span>
+      <span class="row-host">${lockIcon}${esc(c.host)}${mlIcon}${mrIcon}</span>
     </div>
     <span class="row-path-col" title="${esc(c.path)}">${esc(truncate(c.path, 28))}</span>
     <span class="row-size">${fmtBytes(c.resSize)}</span>
@@ -268,9 +521,9 @@ function renderDomainTree() {
       </div>
       <div class="domain-children">
         ${items.map(c => `
-          <div class="domain-child ${c.id === S.selectedId ? 'active' : ''} ${c.mapLocal ? 'map-local' : ''}" data-id="${c.id}">
+          <div class="domain-child ${c.id === S.selectedId ? 'active' : ''} ${c.mapLocal ? 'map-local' : ''} ${c.mapRemote ? 'map-remote' : ''}" data-id="${c.id}">
             <span class="dc-method m-${c.method}">${esc(c.method)}</span>
-            <span class="dc-path" title="${esc(c.path)}">${esc(truncate(c.path, 40))}${c.mapLocal ? '<span class="ml-badge" title="Map Local">⬤</span>' : ''}</span>
+            <span class="dc-path" title="${esc(c.path)}">${esc(truncate(c.path, 40))}${c.mapLocal ? '<span class="ml-badge" title="Map Local">⬤</span>' : ''}${c.mapRemote ? `<span class="mr-badge" title="Map Remote: ${esc(c.mapRemote.ruleName || '')}">⬤</span>` : ''}</span>
             <span class="dc-status ${statusClass(c.status)}">${c.status || '—'}</span>
           </div>
         `).join('')}
@@ -326,6 +579,11 @@ function renderDetail(c) {
     mapLocalFromCapture(c);
   };
 
+  // Wire Map Remote button
+  $('btnMapRemote').onclick = () => {
+    mapRemoteFromCapture(c);
+  };
+
   // Re-render current active tab
   renderDetailTab(c, S.dtab);
 }
@@ -338,6 +596,7 @@ function renderDetailTab(c, tab) {
   if (tab === 'overview') {
     $('dvOverview').classList.remove('hidden');
     renderOverview(c);
+    wireOverviewActions();
   } else if (tab === 'request') {
     $('dvRequest').classList.remove('hidden');
     renderRequestTab(c);
@@ -378,6 +637,21 @@ function renderOverview(c) {
       <div class="ov-row"><div class="ov-key">Res Size</div><div class="ov-val">${fmtBytes(c.resSize)}</div></div>
       <div class="ov-row"><div class="ov-key">Time</div><div class="ov-val">${fmtTime(c.ts)}</div></div>
       ${c.mapLocal ? `<div class="ov-row"><div class="ov-key">Source</div><div class="ov-val"><span class="ml-source-pill">⬤ Map Local</span>${c.resHeaders && c.resHeaders['x-map-local'] ? ` <span style="color:var(--text-3);font-size:11px">${esc(c.resHeaders['x-map-local'])}</span>` : ''}</div></div>` : ''}
+      ${c.mapRemote ? `
+        <div class="ov-row"><div class="ov-key">Source</div><div class="ov-val"><span class="mr-source-pill">⬤ Map Remote</span> <a class="mr-rule-link" data-rule-id="${esc(c.mapRemote.ruleId)}" href="#">${esc(c.mapRemote.ruleName || 'rule')}</a></div></div>
+        <div class="ov-row"><div class="ov-key">Original URL</div><div class="ov-val" style="word-break:break-all;color:var(--text-3)">${esc(c.mapRemote.originalUrl)}</div></div>
+        <div class="ov-row"><div class="ov-key">Final URL</div><div class="ov-val" style="word-break:break-all">${esc(c.mapRemote.finalUrl)}</div></div>
+        <div class="ov-row"><div class="ov-key">Matched</div><div class="ov-val">${(c.mapRemote.matched || []).map(m => `<span class="mr-matched-chip">${esc(m.field)} ${esc(m.operator)} <em>${esc(String(m.value || '').slice(0, 40))}</em></span>`).join(' ')}</div></div>
+      ` : ''}
+      ${isCacheable(c) ? `
+        <div class="ov-row"><div class="ov-key">Cached URL</div><div class="ov-val cached-url-val">
+          <a class="cached-url-link" href="${esc(cacheUrlFor(c))}" target="_blank" rel="noopener" title="Open cached JSON in new tab">${esc(cacheUrlFor(c))}</a>
+          <button class="sec-copy cached-url-copy" data-copy="${esc(cacheUrlFor(c))}" title="Copy URL">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            Copy
+          </button>
+        </div></div>
+      ` : ''}
     </div>
     <div class="timing-section">
       <div class="timing-title">Timing</div>
@@ -398,6 +672,16 @@ function renderOverview(c) {
       </div>
     </div>
   `;
+}
+
+// Wire copy buttons rendered directly in the Overview tab (outside wireSection's scope).
+function wireOverviewActions() {
+  document.querySelectorAll('#dvOverview .cached-url-copy').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      copyText(btn.dataset.copy, btn);
+    });
+  });
 }
 
 // ─── Request Tab ──────────────────────────────────────────────────────────────
@@ -840,9 +1124,23 @@ function initViewTabs() {
       document.querySelectorAll('.vtab').forEach(b => b.classList.toggle('active', b === btn));
       $('viewTimeline').classList.toggle('hidden', S.view !== 'timeline');
       $('viewDomains').classList.toggle('hidden',  S.view !== 'domains');
+      $('viewDebug').classList.toggle('hidden',    S.view !== 'debug');
+      $('viewCached').classList.toggle('hidden',   S.view !== 'cached');
 
-      if (S.view === 'timeline') renderTimeline();
-      else renderDomainTree();
+      if      (S.view === 'timeline') renderTimeline();
+      else if (S.view === 'debug')    renderDebug();
+      else if (S.view === 'cached')   renderCached();
+      else                            renderDomainTree();
+    });
+  });
+
+  // Debug tool-chip filter (All / Map Local / Map Remote)
+  document.querySelectorAll('#debugChips .debug-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      S.debugTool = chip.dataset.tool;
+      document.querySelectorAll('#debugChips .debug-chip').forEach(c =>
+        c.classList.toggle('active', c === chip));
+      renderDebug();
     });
   });
 }
@@ -870,12 +1168,18 @@ function initFilter() {
   const input    = $('filterInput');
   const clearBtn = $('clearFilter');
 
+  function rerenderActiveView() {
+    if      (S.view === 'timeline') renderTimeline();
+    else if (S.view === 'debug')    renderDebug();
+    else if (S.view === 'cached')   renderCached();
+    else                            renderDomainTree();
+  }
+
   input.addEventListener('input', () => {
     S.filter = input.value;
     clearBtn.classList.toggle('hidden', !S.filter);
     applyFilter();
-    if (S.view === 'timeline') renderTimeline();
-    else renderDomainTree();
+    rerenderActiveView();
     updateCount();
   });
 
@@ -884,10 +1188,139 @@ function initFilter() {
     S.filter     = '';
     clearBtn.classList.add('hidden');
     applyFilter();
-    if (S.view === 'timeline') renderTimeline();
-    else renderDomainTree();
+    rerenderActiveView();
     updateCount();
   });
+}
+
+// ─── Sessions ─────────────────────────────────────────────────────────────────
+function updateSessionUI() {
+  const active = S.sessions.find(s => s.id === S.activeSessionId);
+  if (active) {
+    const nameEl  = $('sessionBtnName');
+    const countEl = $('sessionBtnCount');
+    if (nameEl)  nameEl.textContent  = active.name;
+    if (countEl) countEl.textContent = String(active.count);
+  }
+  renderSessionList();
+}
+
+function renderSessionList() {
+  const list = $('sessionList');
+  if (!list) return;
+  list.innerHTML = '';
+
+  for (const s of S.sessions) {
+    const row = document.createElement('div');
+    row.className = 'session-item' + (s.active ? ' active' : '');
+    row.dataset.id = s.id;
+    // Relative-time helper for the created timestamp
+    const created = new Date(s.createdAt);
+    const mins = Math.max(0, Math.round((Date.now() - created.getTime()) / 60000));
+    const ago = mins === 0 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+
+    row.innerHTML = `
+      <div class="session-item-main">
+        <div class="session-item-name">${esc(s.name)}</div>
+        <div class="session-item-meta">${s.count} capture${s.count !== 1 ? 's' : ''} · ${ago}</div>
+      </div>
+      ${s.active
+        ? '<span class="session-item-active-dot" title="Active">●</span>'
+        : `<button class="session-item-del" data-id="${esc(s.id)}" title="Delete session">✕</button>`}
+    `;
+
+    // Row click = switch (only if not already active)
+    row.addEventListener('click', async e => {
+      if (e.target.closest('.session-item-del')) return;
+      if (s.active) return;
+      await switchSession(s.id);
+      closeSessionMenu();
+    });
+
+    list.appendChild(row);
+  }
+
+  // Wire delete buttons
+  list.querySelectorAll('.session-item-del').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const s = S.sessions.find(x => x.id === id);
+      if (!s) return;
+      if (!confirm(`Delete "${s.name}" and all its captures?`)) return;
+      await deleteSession(id);
+    });
+  });
+}
+
+async function switchSession(id) {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    // WS session_activated event will arrive and refresh the UI.
+  } catch (err) {
+    toast('Failed to switch session: ' + (err.message || err), 'error');
+  }
+}
+
+async function createNewSession() {
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!res.ok) throw new Error(await res.text());
+    toast('New session created', 'success');
+    closeSessionMenu();
+    // WS session_activated will handle the refresh.
+  } catch (err) {
+    toast('Failed to create session: ' + (err.message || err), 'error');
+  }
+}
+
+async function deleteSession(id) {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Delete failed');
+    toast('Session deleted', 'success');
+    // WS session_list will refresh the popover.
+  } catch (err) {
+    toast('Failed to delete session: ' + (err.message || err), 'error');
+  }
+}
+
+function openSessionMenu()  { $('sessionMenu').classList.remove('hidden'); $('sessionBtn').classList.add('active'); renderSessionList(); }
+function closeSessionMenu() { $('sessionMenu').classList.add('hidden');    $('sessionBtn').classList.remove('active'); }
+function toggleSessionMenu() {
+  if ($('sessionMenu').classList.contains('hidden')) openSessionMenu();
+  else closeSessionMenu();
+}
+
+function initSessionDropdown() {
+  $('sessionBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    toggleSessionMenu();
+  });
+  $('sessionNewBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    createNewSession();
+  });
+  // Close on outside click
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#sessionDropdown')) closeSessionMenu();
+  });
+
+  // Initial fetch — WS init will follow but this gives instant feedback
+  fetch('/api/sessions')
+    .then(r => r.json())
+    .then(data => {
+      S.sessions        = data.sessions || [];
+      S.activeSessionId = data.activeId || null;
+      updateSessionUI();
+    })
+    .catch(() => {});
 }
 
 // ─── Tools Dropdown ───────────────────────────────────────────────────────────
@@ -925,6 +1358,12 @@ function initToolsDropdown() {
     openMlModal();
   });
 
+  $('menuMapRemote').addEventListener('click', () => {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+    openMrModal();
+  });
+
   // Fetch current settings from server
   fetch('/api/ssl-proxying')
     .then(r => r.json())
@@ -934,6 +1373,11 @@ function initToolsDropdown() {
   fetch('/api/map-local')
     .then(r => r.json())
     .then(data => { S.mapLocal = data; updateMlStatusDot(); })
+    .catch(() => {});
+
+  fetch('/api/map-remote')
+    .then(r => r.json())
+    .then(data => { S.mapRemote = data; updateMrStatusDot(); })
     .catch(() => {});
 }
 
@@ -949,6 +1393,13 @@ function updateMlStatusDot() {
   if (!dot) return;
   dot.classList.remove('on', 'off');
   dot.classList.add(S.mapLocal.enabled ? 'on' : 'off');
+}
+
+function updateMrStatusDot() {
+  const dot = $('mrStatusDot');
+  if (!dot) return;
+  dot.classList.remove('on', 'off');
+  dot.classList.add(S.mapRemote.enabled ? 'on' : 'off');
 }
 
 // ─── SSL Proxying Modal ───────────────────────────────────────────────────────
@@ -1464,8 +1915,9 @@ function openSetupModal() {
 
   // Fill dynamic URLs with actual IP
   const ip = S.ips[0] || location.hostname;
-  const certUrl = `http://${ip}:${S.proxyPort === 8888 ? 8000 : S.proxyPort + 1}/ca.crt`;
-  const dashUrl = `http://${ip}:8000`;
+  // Dashboard port comes from the page we're served from — no need to guess.
+  const dashPort = location.port || '9000';
+  const dashUrl = `http://${ip}:${dashPort}`;
 
   $('iosUrl').textContent     = `${dashUrl}/ca.crt`;
   $('androidUrl').textContent = `${dashUrl}/ca.crt`;
@@ -1483,6 +1935,654 @@ function initSetupModal() {
     if (e.key === 'Escape') $('setupOverlay').classList.add('hidden');
   });
 }
+
+// ─── Map Remote Modal ────────────────────────────────────────────────────────
+const MR_FIELDS    = ['URL', 'HOST', 'PATH', 'METHOD', 'QUERY', 'HEADER'];
+const MR_OPERATORS = [
+  { v: 'CONTAINS',      label: 'contains' },
+  { v: 'EQUALS',        label: 'equals' },
+  { v: 'STARTS_WITH',   label: 'starts with' },
+  { v: 'ENDS_WITH',     label: 'ends with' },
+  { v: 'MATCHES_REGEX', label: 'matches regex' },
+];
+
+let _mrDraft = null;         // working copy of { enabled, rules }
+let _mrEditRule = null;      // working copy of single rule being edited
+let _mrEditIndex = -1;       // index of rule in _mrDraft.rules (-1 if new)
+let _mrTestCondIdx = -1;     // condition index currently being tested
+
+function emptyRule() {
+  return {
+    id:          '',   // set on save
+    name:        'Map Remote',
+    description: '',
+    enabled:     true,
+    conditions:  [emptyCondition()],
+    redirect: {
+      type: 'URL', target: '',
+      preservePath: true, preserveQuery: true,
+      preserveMethod: true, preserveHeaders: true, preserveBody: true,
+    },
+    createdAt: '', updatedAt: '',
+    matchCount: 0, lastMatchedAt: null,
+  };
+}
+function emptyCondition() {
+  return { field: 'URL', operator: 'CONTAINS', value: '', caseSensitive: false };
+}
+
+function openMrModal(prefillRule) {
+  _mrDraft = {
+    enabled: S.mapRemote.enabled,
+    rules:   S.mapRemote.rules.map(r => JSON.parse(JSON.stringify(r))),
+  };
+  $('mrEnabled').checked = _mrDraft.enabled;
+  renderMrRules();
+  $('mrOverlay').classList.remove('hidden');
+
+  if (prefillRule) {
+    _mrEditIndex = -1;
+    _mrEditRule = prefillRule;
+    openMrEditOverlay();
+  }
+}
+
+function closeMrModal() {
+  $('mrOverlay').classList.add('hidden');
+  _mrDraft = null;
+}
+
+function renderMrRules() {
+  const list   = $('mrRulesList');
+  const empty  = $('mrRulesEmpty');
+  list.innerHTML = '';
+  if (!_mrDraft) return;
+
+  if (!_mrDraft.rules.length) {
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+
+  _mrDraft.rules.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'mr-rule-row';
+    const enabledClass = r.enabled ? 'ml-check-on' : 'ml-check-off';
+
+    const srcSummary = summarizeConditions(r.conditions);
+    const dstSummary = summarizeRedirect(r.redirect);
+    const last = r.lastMatchedAt
+      ? fmtTime(r.lastMatchedAt)
+      : '—';
+    const count = r.matchCount || 0;
+
+    row.innerHTML = `
+      <span class="ml-map-enabled ${enabledClass}" data-act="toggle" title="Toggle enabled">${r.enabled ? '✓' : ''}</span>
+      <div class="mr-rule-name-cell">
+        <div class="mr-rule-name-line">
+          <span class="mr-rule-name">${esc(r.name || 'Map Remote')}</span>
+          ${r.description ? `<span class="mr-rule-desc" title="${esc(r.description)}">${esc(truncate(r.description, 40))}</span>` : ''}
+        </div>
+        <div class="mr-rule-src" title="${esc(srcSummary)}">${esc(truncate(srcSummary, 56))}</div>
+      </div>
+      <div class="mr-rule-dst" title="${esc(dstSummary)}">${esc(truncate(dstSummary, 42))}</div>
+      <div class="mr-rule-count">
+        <span class="mr-count-num">${count}</span>
+        <span class="mr-count-last">${last}</span>
+      </div>
+      <div class="mr-rule-actions">
+        <button class="mr-row-btn" data-act="up"   title="Move up"   ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="mr-row-btn" data-act="down" title="Move down" ${i === _mrDraft.rules.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="mr-row-btn" data-act="edit" title="Edit rule">Edit</button>
+        <button class="mr-row-btn mr-row-btn-danger" data-act="del" title="Delete rule">✕</button>
+      </div>
+    `;
+
+    row.addEventListener('click', e => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'toggle') {
+        _mrDraft.rules[i].enabled = !_mrDraft.rules[i].enabled;
+        renderMrRules();
+      } else if (act === 'up' && i > 0) {
+        [_mrDraft.rules[i - 1], _mrDraft.rules[i]] = [_mrDraft.rules[i], _mrDraft.rules[i - 1]];
+        renderMrRules();
+      } else if (act === 'down' && i < _mrDraft.rules.length - 1) {
+        [_mrDraft.rules[i + 1], _mrDraft.rules[i]] = [_mrDraft.rules[i], _mrDraft.rules[i + 1]];
+        renderMrRules();
+      } else if (act === 'edit') {
+        _mrEditIndex = i;
+        _mrEditRule  = JSON.parse(JSON.stringify(_mrDraft.rules[i]));
+        openMrEditOverlay();
+      } else if (act === 'del') {
+        if (confirm(`Delete rule "${_mrDraft.rules[i].name || 'Map Remote'}"?`)) {
+          _mrDraft.rules.splice(i, 1);
+          renderMrRules();
+        }
+      }
+    });
+
+    row.addEventListener('dblclick', e => {
+      if (e.target.closest('[data-act]')) return;
+      _mrEditIndex = i;
+      _mrEditRule  = JSON.parse(JSON.stringify(_mrDraft.rules[i]));
+      openMrEditOverlay();
+    });
+
+    list.appendChild(row);
+  });
+}
+
+function summarizeConditions(conds) {
+  if (!conds || !conds.length) return '(no conditions)';
+  return conds.map(c => {
+    const op = (MR_OPERATORS.find(o => o.v === c.operator) || {}).label || c.operator;
+    const field = c.field === 'HEADER' && c.headerName ? `HEADER[${c.headerName}]` : c.field;
+    return `${field} ${op} "${c.value || ''}"`;
+  }).join(' AND ');
+}
+
+function summarizeRedirect(r) {
+  if (!r) return '—';
+  if (r.type === 'URL')        return '→ ' + (r.target || '(not set)');
+  if (r.type === 'LOCAL_FILE') return '📄 ' + (r.filePath || '(not set)');
+  if (r.type === 'MOCK_SERVER') return 'mock: ' + (r.mockId || '(not set)');
+  return r.type;
+}
+
+// ─── Rule Editor ─────────────────────────────────────────────────────────────
+function openMrEditOverlay() {
+  if (!_mrEditRule) return;
+  $('mrEditName').value        = _mrEditRule.name || '';
+  $('mrEditDescription').value = _mrEditRule.description || '';
+  $('mrEditEnabled').checked   = _mrEditRule.enabled !== false;
+
+  // Redirect type
+  const rt = (_mrEditRule.redirect && _mrEditRule.redirect.type) || 'URL';
+  document.querySelectorAll('[name="mrRedirectType"]').forEach(r => {
+    r.checked = r.value === rt;
+  });
+  showMrTargetPanel(rt);
+
+  if (rt === 'URL') {
+    $('mrTargetUrlInput').value    = _mrEditRule.redirect.target || '';
+    $('mrPreservePath').checked    = _mrEditRule.redirect.preservePath    !== false;
+    $('mrPreserveQuery').checked   = _mrEditRule.redirect.preserveQuery   !== false;
+    $('mrPreserveMethod').checked  = _mrEditRule.redirect.preserveMethod  !== false;
+    $('mrPreserveHeaders').checked = _mrEditRule.redirect.preserveHeaders !== false;
+    $('mrPreserveBody').checked    = _mrEditRule.redirect.preserveBody    !== false;
+  } else if (rt === 'LOCAL_FILE') {
+    $('mrTargetFilePath').value    = _mrEditRule.redirect.filePath || '';
+    $('mrTargetContentType').value = _mrEditRule.redirect.contentType || '';
+    $('mrTargetStatus').value      = _mrEditRule.redirect.statusCode || '';
+  }
+
+  renderMrConditions();
+  updateMrProtoWarning();
+  validateMrRule();
+  $('mrEditOverlay').classList.remove('hidden');
+}
+
+function closeMrEditOverlay() {
+  $('mrEditOverlay').classList.add('hidden');
+  _mrEditRule = null;
+  _mrEditIndex = -1;
+}
+
+function showMrTargetPanel(type) {
+  $('mrTargetUrl').classList.toggle('hidden',   type !== 'URL');
+  $('mrTargetLocal').classList.toggle('hidden', type !== 'LOCAL_FILE');
+}
+
+function renderMrConditions() {
+  const list = $('mrConditionsList');
+  list.innerHTML = '';
+  if (!_mrEditRule) return;
+
+  $('mrConditionCount').textContent = String(_mrEditRule.conditions.length);
+
+  _mrEditRule.conditions.forEach((cond, i) => {
+    const row = document.createElement('div');
+    row.className = 'mr-cond-row';
+
+    const fieldOpts = MR_FIELDS.map(f =>
+      `<option value="${f}" ${cond.field === f ? 'selected' : ''}>${f}</option>`
+    ).join('');
+    const opOpts = MR_OPERATORS.map(o =>
+      `<option value="${o.v}" ${cond.operator === o.v ? 'selected' : ''}>${o.label}</option>`
+    ).join('');
+
+    row.innerHTML = `
+      <select class="mr-cond-field mr-edit-input">${fieldOpts}</select>
+      <select class="mr-cond-op mr-edit-input">${opOpts}</select>
+      <input type="text" class="mr-cond-value mr-edit-input" placeholder="value" value="${esc(cond.value || '')}" spellcheck="false" autocomplete="off">
+      <input type="text" class="mr-cond-header-name mr-edit-input${cond.field === 'HEADER' ? '' : ' hidden'}" placeholder="header name" value="${esc(cond.headerName || '')}" spellcheck="false" autocomplete="off">
+      <button class="mr-cond-icon-btn" data-act="test"   title="Test this condition">
+        <svg width="13" height="13"><use href="#i-flask"/></svg>
+      </button>
+      <button class="mr-cond-icon-btn${cond.caseSensitive ? ' active' : ''}" data-act="filter" title="Advanced: case sensitivity">
+        <svg width="13" height="13"><use href="#i-filter"/></svg>
+      </button>
+      <button class="mr-cond-icon-btn mr-cond-del" data-act="del" title="Remove condition">✕</button>
+    `;
+
+    const fieldSel = row.querySelector('.mr-cond-field');
+    const opSel    = row.querySelector('.mr-cond-op');
+    const valInp   = row.querySelector('.mr-cond-value');
+    const hdrInp   = row.querySelector('.mr-cond-header-name');
+
+    fieldSel.addEventListener('change', () => {
+      _mrEditRule.conditions[i].field = fieldSel.value;
+      hdrInp.classList.toggle('hidden', fieldSel.value !== 'HEADER');
+      validateMrRule();
+    });
+    opSel.addEventListener('change',  () => { _mrEditRule.conditions[i].operator = opSel.value; validateMrRule(); });
+    valInp.addEventListener('input',  () => { _mrEditRule.conditions[i].value    = valInp.value; validateMrRule(); });
+    hdrInp.addEventListener('input',  () => { _mrEditRule.conditions[i].headerName = hdrInp.value; validateMrRule(); });
+
+    row.querySelector('[data-act="test"]').addEventListener('click',   () => openMrTestPanel(i));
+    row.querySelector('[data-act="filter"]').addEventListener('click', () => {
+      _mrEditRule.conditions[i].caseSensitive = !_mrEditRule.conditions[i].caseSensitive;
+      renderMrConditions();
+    });
+    row.querySelector('[data-act="del"]').addEventListener('click', () => {
+      _mrEditRule.conditions.splice(i, 1);
+      if (!_mrEditRule.conditions.length) _mrEditRule.conditions.push(emptyCondition());
+      renderMrConditions();
+      validateMrRule();
+    });
+
+    list.appendChild(row);
+  });
+}
+
+function validateMrRule() {
+  if (!_mrEditRule) return false;
+  const errors = [];
+
+  if (!_mrEditRule.conditions.length) errors.push('At least one condition is required.');
+  _mrEditRule.conditions.forEach((c, i) => {
+    // Empty value allowed only for EQUALS (empty-string intent).
+    if (!c.value && c.operator !== 'EQUALS') {
+      errors.push(`Condition ${i + 1}: value is required.`);
+    }
+    if (c.field === 'HEADER' && !c.headerName) {
+      errors.push(`Condition ${i + 1}: header name is required for HEADER field.`);
+    }
+    if (c.operator === 'MATCHES_REGEX' && c.value) {
+      try { new RegExp(c.value); } catch (e) { errors.push(`Condition ${i + 1}: invalid regex — ${e.message}`); }
+    }
+  });
+
+  const rt = _mrEditRule.redirect.type;
+  if (rt === 'URL') {
+    if (!_mrEditRule.redirect.target) errors.push('Target URL is required.');
+    else {
+      try {
+        const u = new URL(_mrEditRule.redirect.target);
+        if (!/^https?:$/.test(u.protocol)) errors.push('Target URL must be http:// or https://');
+      } catch { errors.push('Target URL is not valid.'); }
+    }
+  } else if (rt === 'LOCAL_FILE') {
+    if (!_mrEditRule.redirect.filePath) errors.push('Local file path is required.');
+  }
+
+  // Warn (not error) on trivially self-referential rules
+  const warnings = [];
+  if (rt === 'URL' && _mrEditRule.redirect.target) {
+    try {
+      const tgt = new URL(_mrEditRule.redirect.target);
+      for (const c of _mrEditRule.conditions) {
+        const val = (c.value || '').toLowerCase();
+        if (val && (val.includes(tgt.hostname.toLowerCase()) || tgt.hostname.toLowerCase().includes(val))) {
+          warnings.push('This rule may redirect to itself — source condition and target share a hostname.');
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  const el = $('mrValidation');
+  if (errors.length) {
+    el.classList.add('mr-val-error');
+    el.classList.remove('mr-val-warn');
+    el.innerHTML = errors.map(e => `⚠ ${esc(e)}`).join('<br>');
+  } else if (warnings.length) {
+    el.classList.add('mr-val-warn');
+    el.classList.remove('mr-val-error');
+    el.innerHTML = warnings.map(w => `⚠ ${esc(w)}`).join('<br>');
+  } else {
+    el.classList.remove('mr-val-error', 'mr-val-warn');
+    el.innerHTML = '';
+  }
+
+  $('mrEditOk').disabled = errors.length > 0;
+  $('mrEditOk').classList.toggle('disabled', errors.length > 0);
+
+  return errors.length === 0;
+}
+
+function updateMrProtoWarning() {
+  const el = $('mrProtoWarn');
+  if (!el || !_mrEditRule) return;
+  const rt = _mrEditRule.redirect.type;
+  if (rt !== 'URL' || !_mrEditRule.redirect.target) { el.classList.add('hidden'); return; }
+  // Figure out source protocol from conditions (best effort: look for URL/HOST scheme)
+  let srcProto = null;
+  for (const c of _mrEditRule.conditions) {
+    if (c.field === 'URL' && /^https?:\/\//i.test(c.value || '')) {
+      srcProto = c.value.toLowerCase().startsWith('https') ? 'https:' : 'http:';
+      break;
+    }
+  }
+  try {
+    const tgt = new URL(_mrEditRule.redirect.target);
+    if (srcProto && srcProto !== tgt.protocol) {
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  } catch { el.classList.add('hidden'); }
+}
+
+function saveMrRule() {
+  if (!_mrEditRule || !validateMrRule()) return;
+
+  _mrEditRule.name        = $('mrEditName').value.trim() || 'Map Remote';
+  _mrEditRule.description = $('mrEditDescription').value.trim();
+  _mrEditRule.enabled     = $('mrEditEnabled').checked;
+
+  const rt = document.querySelector('[name="mrRedirectType"]:checked').value;
+  if (rt === 'URL') {
+    _mrEditRule.redirect = {
+      type: 'URL',
+      target: $('mrTargetUrlInput').value.trim(),
+      preservePath:    $('mrPreservePath').checked,
+      preserveQuery:   $('mrPreserveQuery').checked,
+      preserveMethod:  $('mrPreserveMethod').checked,
+      preserveHeaders: $('mrPreserveHeaders').checked,
+      preserveBody:    $('mrPreserveBody').checked,
+    };
+  } else if (rt === 'LOCAL_FILE') {
+    _mrEditRule.redirect = {
+      type: 'LOCAL_FILE',
+      filePath:    $('mrTargetFilePath').value.trim(),
+      contentType: $('mrTargetContentType').value.trim() || undefined,
+      statusCode:  parseInt($('mrTargetStatus').value) || undefined,
+    };
+  }
+
+  if (_mrEditIndex >= 0) {
+    _mrDraft.rules[_mrEditIndex] = _mrEditRule;
+  } else {
+    _mrDraft.rules.push(_mrEditRule);
+  }
+  renderMrRules();
+  closeMrEditOverlay();
+}
+
+// ─── Test condition panel ────────────────────────────────────────────────────
+function openMrTestPanel(condIdx) {
+  _mrTestCondIdx = condIdx;
+  $('mrTestResult').innerHTML = '';
+  $('mrTestUrl').value = $('mrTestUrl').value || '';
+  $('mrTestOverlay').classList.remove('hidden');
+  setTimeout(() => $('mrTestUrl').focus(), 50);
+}
+
+function closeMrTestPanel() {
+  $('mrTestOverlay').classList.add('hidden');
+  _mrTestCondIdx = -1;
+}
+
+async function runMrTest() {
+  if (_mrTestCondIdx < 0 || !_mrEditRule) return;
+  const cond = _mrEditRule.conditions[_mrTestCondIdx];
+  const url = $('mrTestUrl').value.trim();
+  if (!url) { $('mrTestResult').innerHTML = `<div class="mr-test-fail">Enter a URL to test</div>`; return; }
+
+  try {
+    const res = await fetch('/api/map-remote/test', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        url,
+        method:  $('mrTestMethod').value,
+        headers: {},
+        condition: cond,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      $('mrTestResult').innerHTML = `<div class="mr-test-fail">Error: ${esc(data.error)}</div>`;
+      return;
+    }
+    $('mrTestResult').innerHTML = data.matched
+      ? `<div class="mr-test-pass">✓ MATCH — this condition evaluates true for that URL</div>`
+      : `<div class="mr-test-fail">✗ NO MATCH — this condition evaluates false for that URL</div>`;
+  } catch (e) {
+    $('mrTestResult').innerHTML = `<div class="mr-test-fail">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+// ─── Import / Export ─────────────────────────────────────────────────────────
+function exportMrRules() {
+  if (!_mrDraft || !_mrDraft.rules.length) { toast('No rules to export', 'info'); return; }
+  const blob = new Blob([JSON.stringify(_mrDraft.rules, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `map-remote-rules-${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast(`Exported ${_mrDraft.rules.length} rule${_mrDraft.rules.length !== 1 ? 's' : ''}`, 'success');
+}
+
+function importMrRules(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(reader.result);
+      if (!Array.isArray(parsed)) throw new Error('Expected a JSON array of rules');
+      if (!confirm(`Import ${parsed.length} rule${parsed.length !== 1 ? 's' : ''}? This will replace the current list.`)) return;
+      _mrDraft.rules = parsed;
+      renderMrRules();
+      toast(`Imported ${parsed.length} rule${parsed.length !== 1 ? 's' : ''}`, 'success');
+    } catch (e) {
+      toast('Import failed: ' + e.message, 'error');
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ─── Init / wiring ───────────────────────────────────────────────────────────
+function initMrModal() {
+  $('mrEnabled').addEventListener('change', e => {
+    if (_mrDraft) _mrDraft.enabled = e.target.checked;
+  });
+
+  $('mrAddRule').addEventListener('click', () => {
+    _mrEditIndex = -1;
+    _mrEditRule  = emptyRule();
+    openMrEditOverlay();
+  });
+
+  $('mrExportBtn').addEventListener('click', exportMrRules);
+  $('mrImportBtn').addEventListener('click', () => $('mrImportFile').click());
+  $('mrImportFile').addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    if (file) importMrRules(file);
+    e.target.value = '';
+  });
+
+  $('mrOk').addEventListener('click', async () => {
+    if (!_mrDraft) return;
+    try {
+      const res = await fetch('/api/map-remote', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(_mrDraft),
+      });
+      const data = await res.json();
+      S.mapRemote = data;
+      updateMrStatusDot();
+      toast(`Map Remote ${data.enabled ? 'enabled' : 'disabled'} (${data.rules.length} rule${data.rules.length !== 1 ? 's' : ''})`, 'success');
+    } catch {
+      toast('Failed to save Map Remote settings', 'error');
+    }
+    closeMrModal();
+  });
+
+  $('mrCancel').addEventListener('click', closeMrModal);
+  $('mrClose').addEventListener('click',  closeMrModal);
+  $('mrOverlay').addEventListener('click', e => {
+    if (e.target === $('mrOverlay')) closeMrModal();
+  });
+
+  // Editor wiring
+  $('mrEditOk').addEventListener('click', saveMrRule);
+  $('mrEditCancel').addEventListener('click', closeMrEditOverlay);
+  $('mrEditClose').addEventListener('click',  closeMrEditOverlay);
+  $('mrEditOverlay').addEventListener('click', e => {
+    if (e.target === $('mrEditOverlay')) closeMrEditOverlay();
+  });
+
+  $('mrEditNameFocus').addEventListener('click', () => $('mrEditName').focus());
+
+  $('mrAddConditionBtn').addEventListener('click', () => {
+    _mrEditRule.conditions.push(emptyCondition());
+    renderMrConditions();
+    validateMrRule();
+  });
+
+  // Redirect type switch
+  document.querySelectorAll('[name="mrRedirectType"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const t = r.value;
+      if (_mrEditRule) {
+        if (t === 'URL' && _mrEditRule.redirect.type !== 'URL') {
+          _mrEditRule.redirect = { type: 'URL', target: '', preservePath: true, preserveQuery: true, preserveMethod: true, preserveHeaders: true, preserveBody: true };
+        } else if (t === 'LOCAL_FILE' && _mrEditRule.redirect.type !== 'LOCAL_FILE') {
+          _mrEditRule.redirect = { type: 'LOCAL_FILE', filePath: '' };
+        }
+      }
+      showMrTargetPanel(t);
+      validateMrRule();
+    });
+  });
+
+  // URL target + preserve flags: persist to _mrEditRule
+  const bindTarget = (id, key) => {
+    $(id).addEventListener('input', () => {
+      if (_mrEditRule && _mrEditRule.redirect.type === 'URL') {
+        _mrEditRule.redirect[key] = $(id).value;
+        validateMrRule();
+        updateMrProtoWarning();
+      }
+    });
+  };
+  bindTarget('mrTargetUrlInput', 'target');
+  ['mrPreservePath','mrPreserveQuery','mrPreserveMethod','mrPreserveHeaders','mrPreserveBody'].forEach(id => {
+    $(id).addEventListener('change', () => {
+      const keyMap = {
+        mrPreservePath: 'preservePath', mrPreserveQuery: 'preserveQuery',
+        mrPreserveMethod: 'preserveMethod', mrPreserveHeaders: 'preserveHeaders',
+        mrPreserveBody: 'preserveBody',
+      };
+      if (_mrEditRule && _mrEditRule.redirect.type === 'URL') {
+        _mrEditRule.redirect[keyMap[id]] = $(id).checked;
+      }
+    });
+  });
+
+  // Local file target
+  $('mrTargetFilePath').addEventListener('input', () => {
+    if (_mrEditRule && _mrEditRule.redirect.type === 'LOCAL_FILE') {
+      _mrEditRule.redirect.filePath = $('mrTargetFilePath').value;
+      validateMrRule();
+    }
+  });
+  $('mrTargetContentType').addEventListener('input', () => {
+    if (_mrEditRule && _mrEditRule.redirect.type === 'LOCAL_FILE') {
+      _mrEditRule.redirect.contentType = $('mrTargetContentType').value;
+    }
+  });
+  $('mrTargetStatus').addEventListener('input', () => {
+    if (_mrEditRule && _mrEditRule.redirect.type === 'LOCAL_FILE') {
+      _mrEditRule.redirect.statusCode = parseInt($('mrTargetStatus').value) || undefined;
+    }
+  });
+
+  $('mrBrowseBtn').addEventListener('click', () => {
+    const currentVal = $('mrTargetFilePath').value.trim();
+    openFileBrowser(currentVal, p => {
+      $('mrTargetFilePath').value = p;
+      if (_mrEditRule && _mrEditRule.redirect.type === 'LOCAL_FILE') {
+        _mrEditRule.redirect.filePath = p;
+      }
+      validateMrRule();
+    });
+  });
+
+  // Name/description inputs
+  $('mrEditName').addEventListener('input', () => {
+    if (_mrEditRule) _mrEditRule.name = $('mrEditName').value;
+  });
+  $('mrEditDescription').addEventListener('input', () => {
+    if (_mrEditRule) _mrEditRule.description = $('mrEditDescription').value;
+  });
+  $('mrEditEnabled').addEventListener('change', () => {
+    if (_mrEditRule) _mrEditRule.enabled = $('mrEditEnabled').checked;
+  });
+
+  // Test panel
+  $('mrTestRun').addEventListener('click',   runMrTest);
+  $('mrTestDone').addEventListener('click',  closeMrTestPanel);
+  $('mrTestClose').addEventListener('click', closeMrTestPanel);
+  $('mrTestOverlay').addEventListener('click', e => {
+    if (e.target === $('mrTestOverlay')) closeMrTestPanel();
+  });
+  $('mrTestUrl').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runMrTest();
+  });
+}
+
+// Called from rule-link click on overview pill
+function openMrRuleById(ruleId) {
+  openMrModal();
+  setTimeout(() => {
+    const idx = _mrDraft ? _mrDraft.rules.findIndex(r => r.id === ruleId) : -1;
+    if (idx >= 0) {
+      _mrEditIndex = idx;
+      _mrEditRule  = JSON.parse(JSON.stringify(_mrDraft.rules[idx]));
+      openMrEditOverlay();
+    }
+  }, 50);
+}
+
+// Build a new rule from a captured request (Map Remote button on detail bar)
+function mapRemoteFromCapture(c) {
+  if (!c) return;
+  const rule = emptyRule();
+  rule.name = `Redirect ${c.host}`;
+  rule.conditions = [
+    { field: 'URL', operator: 'CONTAINS', value: c.host, caseSensitive: false },
+  ];
+  _mrEditIndex = -1;
+  _mrEditRule  = rule;
+  openMrModal(rule);
+}
+
+// Delegate clicks on mr-rule-link inside overview
+document.addEventListener('click', e => {
+  const link = e.target.closest('.mr-rule-link');
+  if (!link) return;
+  e.preventDefault();
+  const id = link.dataset.ruleId;
+  if (id) openMrRuleById(id);
+});
 
 // ─── Utility: DOM ─────────────────────────────────────────────────────────────
 function $(id) { return document.getElementById(id); }
@@ -1541,9 +2641,11 @@ function init() {
   initDetailTabs();
   initFilter();
   initNavActions();
+  initSessionDropdown();
   initToolsDropdown();
   initSslModal();
   initMlModal();
+  initMrModal();
   initFileBrowser();
   initSetupModal();
   initResize();

@@ -2,14 +2,25 @@
   "name": "local-api-web-proxy",
   "version": "1.0.0",
   "description": "Local HTTP proxy with Charles-inspired real-time dashboard",
-  "main": "server.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "start:custom": "node server.js --proxy-port ${PROXY_PORT:-8888} --dashboard-port ${DASH_PORT:-8000}"
+    "start:custom": "node server.js --proxy-port ${PROXY_PORT:-9999} --dashboard-port ${DASH_PORT:-9000}",
+    "test": "node --test test/map-remote.test.js",
+    "electron:dev": "node electron/dev.js",
+    "dist:mac": "electron-builder --mac --config electron-builder.yml",
+    "dist:mac15": "electron-builder --mac --config electron-builder-mac15.yml",
+    "dist:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --config electron-builder.yml",
+    "dist:linux": "electron-builder --linux --config electron-builder.yml"
   },
   "dependencies": {
     "node-forge": "^1.4.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
   }
 }

@@ -30,6 +30,10 @@
   <symbol id="i-redirect"  viewBox="0 0 24 24"><path fill="currentColor" d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></symbol>
   <symbol id="i-breakpt"   viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-11H9c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1z"/></symbol>
   <symbol id="i-gauge"     viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8 0-1.85.63-3.55 1.69-4.9L16.9 18.31C15.55 19.37 13.85 20 12 20zm6.31-3.1L7.1 5.69C8.45 4.63 10.15 4 12 4c4.42 0 8 3.58 8 8 0 1.85-.63 3.55-1.69 4.9z"/></symbol>
+  <symbol id="i-flask"     viewBox="0 0 24 24"><path fill="currentColor" d="M5 3h14v2h-1v5.5l4.5 7.5c.6 1 .1 2-.9 2H2.4c-1 0-1.5-1-.9-2L6 10.5V5H5V3zm3 2v6l-3.5 6h15L16 11V5H8z"/></symbol>
+  <symbol id="i-filter"    viewBox="0 0 24 24"><path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></symbol>
+  <symbol id="i-pencil"    viewBox="0 0 24 24"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+  <symbol id="i-grip"      viewBox="0 0 24 24"><path fill="currentColor" d="M8 6h2v2H8V6zm6 0h2v2h-2V6zM8 11h2v2H8v-2zm6 0h2v2h-2v-2zM8 16h2v2H8v-2zm6 0h2v2h-2v-2z"/></symbol>
 </svg>
 
 <!-- ─── NAVBAR ──────────────────────────────────────────────────────────────── -->
@@ -51,7 +55,31 @@
       <svg width="13" height="13" id="recIcon"><use href="#i-pause"/></svg>
     </button>
     <div class="ip-chips" id="ipChips"><!-- filled by JS --></div>
-    <span class="port-pill" id="portPill">:8888</span>
+    <span class="port-pill" id="portPill">:9999</span>
+
+    <div class="sep"></div>
+
+    <!-- Session selector — active session + popover to switch / create / delete -->
+    <div class="session-dropdown" id="sessionDropdown">
+      <button class="session-btn" id="sessionBtn" title="Captures are scoped to the active session. Create new sessions to keep captures separate.">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>
+        </svg>
+        <span class="session-btn-name" id="sessionBtnName">Session 1</span>
+        <span class="session-btn-count" id="sessionBtnCount">0</span>
+        <svg class="chevron-d" width="10" height="10"><use href="#i-chevron-d"/></svg>
+      </button>
+      <div class="session-menu hidden" id="sessionMenu">
+        <div class="session-menu-hdr">Sessions</div>
+        <div class="session-list" id="sessionList"><!-- items injected --></div>
+        <div class="session-menu-footer">
+          <button class="session-new-btn" id="sessionNewBtn">
+            <svg width="12" height="12"><use href="#i-plus"/></svg>
+            New Session
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="navbar-actions">
@@ -73,10 +101,10 @@
           <span class="tool-item-label label-amber">Map Local…</span>
           <span class="ml-status-dot" id="mlStatusDot"></span>
         </button>
-        <button class="tools-menu-item tools-item-soon" disabled>
+        <button class="tools-menu-item" id="menuMapRemote">
           <span class="tool-icon-chip chip-cyan"><svg width="14" height="14"><use href="#i-redirect"/></svg></span>
           <span class="tool-item-label label-cyan">Map Remote…</span>
-          <span class="soon-badge">Soon</span>
+          <span class="mr-status-dot" id="mrStatusDot"></span>
         </button>
         <button class="tools-menu-item tools-item-soon" disabled>
           <span class="tool-icon-chip chip-red"><svg width="14" height="14"><use href="#i-breakpt"/></svg></span>
@@ -112,6 +140,14 @@
   <div class="view-tabs">
     <button class="vtab active" data-view="domains">Domains</button>
     <button class="vtab"        data-view="timeline">Timeline</button>
+    <button class="vtab"        data-view="debug">
+      Debug
+      <span class="vtab-count hidden" id="debugCount">0</span>
+    </button>
+    <button class="vtab"        data-view="cached">
+      Cached
+      <span class="vtab-count hidden" id="cachedCount">0</span>
+    </button>
   </div>
   <div class="search-wrap">
     <svg width="13" height="13" class="search-ico"><use href="#i-search"/></svg>
@@ -146,6 +182,57 @@
       <div class="domain-tree" id="domainTree"></div>
     </div>
 
+    <!-- Debug view — only shows captures matched by a Tools-menu feature
+         (Map Local, Map Remote, …). Filter-chips at the top let the user
+         narrow by tool. -->
+    <div id="viewDebug" class="hidden">
+      <div class="debug-toolbar">
+        <span class="debug-toolbar-label">Tool matches</span>
+        <div class="debug-chip-group" id="debugChips">
+          <button class="debug-chip active" data-tool="all">All</button>
+          <button class="debug-chip chip-amber-border" data-tool="mapLocal">
+            <span class="chip-dot chip-dot-amber"></span>Map Local
+          </button>
+          <button class="debug-chip chip-cyan-border" data-tool="mapRemote">
+            <span class="chip-dot chip-dot-cyan"></span>Map Remote
+          </button>
+        </div>
+      </div>
+      <div class="list-hdr">
+        <span class="lh-method">Method</span>
+        <span class="lh-status">Status</span>
+        <span class="lh-host">Host</span>
+        <span class="lh-path">Path</span>
+        <span class="lh-size">Size</span>
+        <span class="lh-dur">Time</span>
+      </div>
+      <div class="req-list" id="debugList"></div>
+      <div class="debug-empty hidden" id="debugEmpty">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" style="opacity:.15">
+          <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 14H6v-2h12v2zm0-4H6v-2h12v2zm0-4H6V7h12v2z"/>
+        </svg>
+        <p class="debug-empty-title">No tool matches yet</p>
+        <p class="debug-empty-sub">Configure <strong>Map Local</strong> or <strong>Map Remote</strong> in <strong>Tools</strong> —<br>matching traffic will appear here.</p>
+      </div>
+    </div>
+
+    <!-- Cached view — captured JSON responses grouped by domain, each row
+         replayable at http://<ip>:<dashboardPort>/<host>/<path>?<query>. -->
+    <div id="viewCached" class="hidden">
+      <div class="cached-toolbar">
+        <span class="debug-toolbar-label">JSON captures · replay locally</span>
+        <span class="cached-base" id="cachedBase">base: <code id="cachedBaseUrl">http://localhost:9000/</code></span>
+      </div>
+      <div class="domain-tree" id="cachedTree"></div>
+      <div class="debug-empty hidden" id="cachedEmpty">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" style="opacity:.15">
+          <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+        </svg>
+        <p class="debug-empty-title">No cached JSON yet</p>
+        <p class="debug-empty-sub">Capture a JSON response through the proxy —<br>it will be served back here at <code>/&lt;host&gt;/&lt;path&gt;</code>.</p>
+      </div>
+    </div>
+
   </div>
 
   <!-- Resize Handle -->
@@ -177,6 +264,10 @@
         <button class="dtab-action ml-action-btn" id="btnMapLocal" title="Map this endpoint to a local file">
           <svg width="12" height="12"><use href="#i-folder"/></svg>
           Map Local
+        </button>
+        <button class="dtab-action mr-action-btn" id="btnMapRemote" title="Create a Map Remote rule from this request">
+          <svg width="12" height="12"><use href="#i-redirect"/></svg>
+          Map Remote
         </button>
         <button class="dtab-action" id="btnCurl" title="Copy as cURL">
           <svg width="12" height="12"><use href="#i-curl"/></svg>
@@ -221,6 +312,11 @@
         When enabled, LocalAPIWebProxy decrypts HTTPS traffic for the listed hosts,
         allowing plain-text inspection. Add <strong>*</strong> to proxy all HTTPS traffic,
         or restrict to specific domains.
+      </p>
+      <p class="setup-desc" style="margin-top:-6px;color:var(--text-3);font-size:11.5px">
+        The same list also filters <strong>plain-HTTP captures</strong>: traffic to
+        non-matching hosts is forwarded as usual but hidden from the dashboard, so
+        OS background noise (Windows Update, connectivity probes, etc.) doesn't flood the view.
       </p>
 
       <label class="ssl-enable-row">
@@ -372,6 +468,212 @@
   </div>
 </div>
 
+<!-- ─── MAP REMOTE RULES LIST MODAL ────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="mrOverlay">
+  <div class="mr-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-redirect"/></svg>
+        Map Remote Rules
+      </div>
+      <button class="setup-close" id="mrClose">✕</button>
+    </div>
+
+    <div class="mr-modal-body">
+      <p class="setup-desc">
+        Redirect matching requests to a different URL or a local file.
+        Rules are evaluated in order — <strong>first match wins</strong>.
+        Matched requests show a <strong class="mr-indicator-sample">cyan indicator</strong> in the request list.
+      </p>
+
+      <label class="ssl-enable-row">
+        <div class="toggle-wrap">
+          <input type="checkbox" id="mrEnabled" class="toggle-input">
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </div>
+        <span class="ssl-enable-label">Enable Map Remote</span>
+      </label>
+
+      <div class="mr-rules-section">
+        <div class="mr-rules-hdr">
+          <span class="mr-col-h">On</span>
+          <span class="mr-col-h">Name / Source</span>
+          <span class="mr-col-h">Destination</span>
+          <span class="mr-col-h mr-col-center">Matched</span>
+          <span class="mr-col-h"></span>
+        </div>
+        <div class="mr-rules-list" id="mrRulesList"><!-- injected --></div>
+        <div class="mr-rules-empty hidden" id="mrRulesEmpty">
+          <p><strong>No rules yet.</strong></p>
+          <p class="mr-empty-sub">Create your first rule to redirect requests to a different URL or a local file.</p>
+        </div>
+        <div class="ssl-locations-actions mr-rules-actions">
+          <button class="ssl-loc-btn mr-primary-btn" id="mrAddRule">
+            <svg width="13" height="13"><use href="#i-plus"/></svg>
+            New Map Remote rule
+          </button>
+          <div class="mr-actions-spacer"></div>
+          <button class="ssl-loc-btn" id="mrImportBtn" title="Import rules from a JSON file">Import…</button>
+          <button class="ssl-loc-btn" id="mrExportBtn" title="Export all rules as JSON">Export</button>
+          <input type="file" id="mrImportFile" accept="application/json,.json" class="hidden">
+        </div>
+      </div>
+    </div>
+
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-cancel" id="mrCancel">Cancel</button>
+      <button class="ssl-footer-btn ssl-ok" id="mrOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MAP REMOTE RULE EDITOR MODAL ───────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="mrEditOverlay">
+  <div class="mr-edit-modal">
+    <div class="mr-edit-hdr">
+      <div class="mr-edit-title-wrap">
+        <input type="text" id="mrEditName" class="mr-edit-name" placeholder="Map Remote" spellcheck="false" autocomplete="off">
+        <button class="mr-edit-pencil" id="mrEditNameFocus" title="Edit name">
+          <svg width="12" height="12"><use href="#i-pencil"/></svg>
+        </button>
+        <label class="mr-edit-enable">
+          <div class="toggle-wrap">
+            <input type="checkbox" id="mrEditEnabled" class="toggle-input">
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </div>
+        </label>
+      </div>
+      <button class="setup-close" id="mrEditClose">✕</button>
+    </div>
+    <textarea id="mrEditDescription" class="mr-edit-description" placeholder="Add description (optional)" spellcheck="false" rows="1"></textarea>
+
+    <div class="mr-edit-body">
+
+      <!-- ── If request (conditions) ── -->
+      <details class="mr-fieldset mr-conditions-fieldset" open>
+        <summary class="mr-fieldset-hdr">
+          <span class="mr-fieldset-title">If request</span>
+          <span class="mr-condition-count" id="mrConditionCount">0</span>
+          <svg class="mr-chevron" width="12" height="12"><use href="#i-chevron-d"/></svg>
+        </summary>
+        <div class="mr-fieldset-body">
+          <div class="mr-conditions-list" id="mrConditionsList"><!-- rows injected --></div>
+          <button class="mr-add-condition-btn" id="mrAddConditionBtn" type="button">
+            <svg width="13" height="13"><use href="#i-plus"/></svg>
+            Add a new condition
+          </button>
+        </div>
+      </details>
+
+      <!-- ── Redirects to ── -->
+      <div class="mr-fieldset mr-redirects-fieldset">
+        <div class="mr-fieldset-hdr mr-static-hdr">
+          <span class="mr-fieldset-title">Redirects to</span>
+          <span class="mr-info-icon" title="First matched rule redirects the request. Preserve flags decide how the original is folded into the new URL.">ⓘ</span>
+        </div>
+        <div class="mr-fieldset-body">
+          <div class="mr-radio-row">
+            <label class="mr-radio">
+              <input type="radio" name="mrRedirectType" value="URL" checked>
+              <span>Another URL</span>
+            </label>
+            <label class="mr-radio">
+              <input type="radio" name="mrRedirectType" value="LOCAL_FILE">
+              <span>Local file</span>
+            </label>
+            <label class="mr-radio mr-radio-disabled" title="Mock server subsystem not available in this build">
+              <input type="radio" name="mrRedirectType" value="MOCK_SERVER" disabled>
+              <span>Pick from Files/Mock server</span>
+            </label>
+          </div>
+
+          <!-- URL target -->
+          <div class="mr-target-panel" id="mrTargetUrl">
+            <input type="text" id="mrTargetUrlInput" class="mr-edit-input mr-target-url-input" placeholder="http://www.duckduckgo.com" spellcheck="false" autocomplete="off">
+            <div class="mr-preserve-grid">
+              <label class="mr-preserve-item">
+                <input type="checkbox" id="mrPreservePath" checked>
+                <span>Preserve path</span>
+              </label>
+              <label class="mr-preserve-item">
+                <input type="checkbox" id="mrPreserveQuery" checked>
+                <span>Preserve query</span>
+              </label>
+              <label class="mr-preserve-item">
+                <input type="checkbox" id="mrPreserveMethod" checked>
+                <span>Preserve method</span>
+              </label>
+              <label class="mr-preserve-item">
+                <input type="checkbox" id="mrPreserveHeaders" checked>
+                <span>Preserve headers</span>
+              </label>
+              <label class="mr-preserve-item">
+                <input type="checkbox" id="mrPreserveBody" checked>
+                <span>Preserve body</span>
+              </label>
+            </div>
+            <div class="mr-proto-warn hidden" id="mrProtoWarn">
+              ⚠ Target uses a different protocol than the source — the client may reject mixed-content responses.
+            </div>
+          </div>
+
+          <!-- Local file target -->
+          <div class="mr-target-panel hidden" id="mrTargetLocal">
+            <div class="mr-path-row">
+              <input type="text" id="mrTargetFilePath" class="mr-edit-input" placeholder="C:\mocks\response.json" spellcheck="false" autocomplete="off">
+              <button class="ml-browse-btn" id="mrBrowseBtn" type="button">Browse…</button>
+            </div>
+            <div class="mr-local-opts">
+              <label class="mr-edit-lbl-inline">Content-Type:</label>
+              <input type="text" id="mrTargetContentType" class="mr-edit-input mr-edit-small" placeholder="(auto from extension)" spellcheck="false" autocomplete="off">
+              <label class="mr-edit-lbl-inline">Status:</label>
+              <input type="number" id="mrTargetStatus" class="mr-edit-input mr-edit-small" placeholder="200" min="100" max="599">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mr-validation" id="mrValidation"></div>
+    </div>
+
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-cancel" id="mrEditCancel">Cancel</button>
+      <button class="ssl-footer-btn ssl-ok" id="mrEditOk">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MAP REMOTE CONDITION TEST PANEL (floating) ─────────────────────────── -->
+<div class="modal-overlay hidden" id="mrTestOverlay">
+  <div class="mr-test-modal">
+    <div class="setup-modal-hdr">
+      <div class="setup-modal-title">
+        <svg width="16" height="16"><use href="#i-flask"/></svg>
+        Test condition
+      </div>
+      <button class="setup-close" id="mrTestClose">✕</button>
+    </div>
+    <div class="mr-test-body">
+      <p class="mr-test-desc">Paste a sample URL and see whether this condition would match.</p>
+      <input type="text" id="mrTestUrl" class="mr-edit-input mr-test-url" placeholder="https://api.example.com/v1/users?id=123" spellcheck="false" autocomplete="off">
+      <div class="mr-test-method-row">
+        <label class="mr-edit-lbl-inline">Method:</label>
+        <select id="mrTestMethod" class="mr-edit-input mr-edit-small">
+          <option>GET</option><option>POST</option><option>PUT</option>
+          <option>DELETE</option><option>PATCH</option><option>HEAD</option><option>OPTIONS</option>
+        </select>
+      </div>
+      <div class="mr-test-result" id="mrTestResult"></div>
+    </div>
+    <div class="ssl-modal-footer">
+      <button class="ssl-footer-btn ssl-ok" id="mrTestRun">Run test</button>
+      <button class="ssl-footer-btn ssl-cancel" id="mrTestDone">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ─── FILE BROWSER MODAL ─────────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="fbOverlay">
   <div class="fb-modal">
@@ -462,7 +764,7 @@
           </summary>
           <ol class="platform-steps">
             <li>On the device, open <strong>Safari</strong> and go to:<br>
-              <code id="iosUrl">http://&lt;your-ip&gt;:8000/ca.crt</code></li>
+              <code id="iosUrl">http://&lt;your-ip&gt;:9000/ca.crt</code></li>
             <li>Tap <em>Allow</em> when prompted to download profile</li>
             <li><strong>Settings</strong> → <em>General</em> → <em>VPN &amp; Device Management</em></li>
             <li>Tap <strong>LocalApiWebProxy CA</strong> → <em>Install</em> → enter passcode</li>
@@ -477,7 +779,7 @@
           </summary>
           <ol class="platform-steps">
             <li>On the device open Chrome and go to:<br>
-              <code id="androidUrl">http://&lt;your-ip&gt;:8000/ca.crt</code></li>
+              <code id="androidUrl">http://&lt;your-ip&gt;:9000/ca.crt</code></li>
             <li>Download the file</li>
             <li><strong>Settings</strong> → <em>Security</em> → <em>Encryption &amp; credentials</em></li>
             <li>Tap <em>Install a certificate</em> → <em>CA certificate</em></li>
